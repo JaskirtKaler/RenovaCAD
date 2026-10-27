@@ -1,0 +1,4 @@
+.kitchen-preview { display: block; width: 100%; height: 100%; min-height: 0; cursor: grab; }
+.kitchen-object { cursor: pointer; outline: none; }
+.kitchen-object:hover polygon { filter: brightness(1.04); }
+.kitchen-object:focus-visible polygon { stroke: #a2edbd; stroke-width: 3; }
