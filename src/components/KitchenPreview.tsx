@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
-import { displayMeasurement, type SceneObject, type Unit } from '../workspace'
-import { boundsOf, boxFaces, boxPoint, createProjector, sceneBoxes, type Camera, type Point3, type SceneBox } from '../viewport'
+import { TILE_MM, displayMeasurement, type SceneObject, type Unit } from '../workspace'
+import { FLOOR_GRID, boxFaces, boxPoint, cameraDirection, createProjector, sceneBoxes, type Camera, type Point3, type SceneBox } from '../viewport'
 
 interface KitchenPreviewProps {
   objects: SceneObject[]
@@ -12,6 +12,8 @@ interface KitchenPreviewProps {
   unit: Unit
   onOrbit: (dx: number, dy: number) => void
   onZoom: (delta: number) => void
+  frame: Point3[]
+  moveMode: boolean
 }
 
 interface Drag {
@@ -19,26 +21,35 @@ interface Drag {
   moved: boolean; objectId: string | null
 }
 
-export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, camera, unit, onOrbit, onZoom }: KitchenPreviewProps) {
+export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, camera, unit, onOrbit, onZoom, frame, moveMode }: KitchenPreviewProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const drag = useRef<Drag | null>(null)
   const boxes = sceneBoxes(objects)
-  const objectPoints = boxes.flatMap((box) => boxFaces(box).flatMap((face) => face.points))
-  const bounds = boundsOf(objectPoints)
-  const minX = bounds.min.x - 120, maxX = bounds.max.x + 140
-  const minZ = bounds.min.z - 120, maxZ = bounds.max.z + 180
-  const roomHeight = bounds.max.y + 130
-  const roomPoint = (x: number, y: number, z: number): Point3 => ({ x: minX + x * (maxX - minX), y: y * roomHeight, z: minZ + z * (maxZ - minZ) })
-  const floor = [roomPoint(0, 0, 0), roomPoint(1, 0, 0), roomPoint(1, 0, 1), roomPoint(0, 0, 1)]
-  const ceiling = [roomPoint(0, 1, 0), roomPoint(1, 1, 0), roomPoint(1, 1, 1), roomPoint(0, 1, 1)]
-  const { project, isVisible } = createProjector([...objectPoints, ...floor, ...ceiling], camera, zoom)
-  const points = (vertices: Point3[]) => vertices.map((point) => { const p = project(point); return `${p.x},${p.y}` }).join(' ')
+  const { project, isVisible, isInFront, projectSegment, projectPolygon } = createProjector(frame, camera, zoom)
+  const points = (vertices: Point3[]) => projectPolygon(vertices).map((p) => `${p.x},${p.y}`).join(' ')
   const line = (from: Point3, to: Point3) => {
-    const a = project(from), b = project(to)
+    const segment = projectSegment(from, to)
+    if (!segment) return null
+    const [a, b] = segment
     return <line x1={a.x} y1={a.y} x2={b.x} y2={b.y} />
   }
   const sortedBoxes = [...boxes].sort((a, b) => project(boxPoint(a, 0.5, 0.5, 0.5)).depth - project(boxPoint(b, 0.5, 0.5, 0.5)).depth)
   const selectedBox = boxes.find((box) => box.object.id === selectedId)
+  const verticalGuide = () => {
+    if (!moveMode || !selectedBox) return null
+    const origin = boxPoint(selectedBox, 0.5, 0, 0.5)
+    const horizontalAxis = Math.abs(cameraDirection(camera).z) >= Math.abs(cameraDirection(camera).x) ? 'x' : 'z'
+    const planePoint = (horizontal: number, y: number): Point3 => ({ ...origin, [horizontalAxis]: horizontal, y })
+    const anchor = project(origin)
+    return <g data-position-guide="height" pointerEvents="none">
+      {showGrid && <g data-grid-plane="vertical" stroke="#6a9f7a" strokeWidth="0.7" strokeOpacity="0.16">{Array.from({ length: 65 }, (_, index) => {
+        const coordinate = (index - 32) * TILE_MM
+        return <g key={index}>{line(planePoint(coordinate, -10000), planePoint(coordinate, 10000))}{line(planePoint(-10000, coordinate), planePoint(10000, coordinate))}</g>
+      })}</g>}
+      <g stroke="#9cdbaf" strokeWidth="1.5" strokeDasharray="5 5">{line(origin, { ...origin, y: 0 })}</g>
+      {isInFront(origin) && <text x={anchor.x + 16} y={anchor.y - 10} fontSize="13" fill="#a1d6af">Floor {origin.y >= 0 ? '+' : ''}{displayMeasurement(origin.y, unit)} {unit}</text>}
+    </g>
+  }
 
   useEffect(() => {
     const svg = svgRef.current
@@ -68,6 +79,7 @@ export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, 
   }
 
   const dimension = (box: SceneBox) => {
+    if (!isInFront(boxPoint(box, 0, 0, 1)) || !isInFront(boxPoint(box, 1, 0, 1))) return null
     const a = project(boxPoint(box, 0, 0, 1)), b = project(boxPoint(box, 1, 0, 1))
     const length = Math.hypot(b.x - a.x, b.y - a.y)
     let nx = -(b.y - a.y) / Math.max(1, length), ny = (b.x - a.x) / Math.max(1, length)
@@ -93,6 +105,7 @@ export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, 
       role="group"
       aria-label="3D kitchen viewport. Drag to orbit, scroll to zoom, or select an object."
       style={{ touchAction: 'none', userSelect: 'none' }}
+      overflow="hidden"
       onPointerDown={(event) => {
         if (event.button !== 0) return
         const target = event.target
@@ -118,15 +131,8 @@ export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, 
       }}
       onPointerCancel={() => { drag.current = null; if (svgRef.current) svgRef.current.style.cursor = '' }}
     >
-      <polygon points={points(floor)} fill="#151d17" fillOpacity="0.55" pointerEvents="none" />
-      {showGrid && <g stroke="#344136" strokeWidth="0.75" strokeOpacity="0.7" pointerEvents="none">
-        {Array.from({ length: 11 }, (_, index) => <g key={index}>{line(roomPoint((index + 1) / 12, 0, 0), roomPoint((index + 1) / 12, 0, 1))}{line(roomPoint(0, 0, (index + 1) / 12), roomPoint(1, 0, (index + 1) / 12))}</g>)}
-      </g>}
-      <g fill="none" stroke="#697568" strokeWidth="1.4" strokeOpacity="0.65" pointerEvents="none">
-        <polygon points={points(floor)} />
-        <polygon points={points(ceiling)} />
-        {floor.map((point, index) => <g key={index}>{line(point, ceiling[index])}</g>)}
-      </g>
+      {showGrid && <g data-grid-plane="floor" pointerEvents="none">{FLOOR_GRID.map((segment, index) => <g key={index} stroke={segment.axis ? '#75967a' : '#465c4a'} strokeWidth={segment.axis ? 1.5 : segment.major ? 1 : 0.6} strokeOpacity={segment.axis ? 0.7 : segment.major ? 0.52 : 0.3}>{line(segment.from, segment.to)}</g>)}</g>}
+      {verticalGuide()}
       {sortedBoxes.map((box) => {
         const selected = box.object.id === selectedId
         const name = `${box.object.name}, ${displayMeasurement(box.object.dimensionsMm.width, unit)} ${unit} wide${selected ? ', selected' : ''}`

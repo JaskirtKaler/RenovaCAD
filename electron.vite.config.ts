@@ -8,6 +8,11 @@ export default defineConfig({
       rollupOptions: { input: resolve('electron/main.ts') },
     },
   },
+  preload: {
+    build: {
+      rollupOptions: { input: resolve('electron/preload.ts') },
+    },
+  },
   renderer: {
     root: '.',
     plugins: [react()],

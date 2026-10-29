@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { displayMeasurement, workspaceReducer as reduce } from './workspace'
+import { POSITION_LIMIT_MM, TILE_MM, canNudge, displayMeasurement, workspaceReducer as reduce, type Axis } from './workspace'
 
 type State = Parameters<typeof reduce>[0]
 
@@ -8,8 +8,8 @@ function sample(): State {
   return {
     past: [], future: [], revision: 0, selectedId: 'base-01',
     present: [
-      { id: 'base-01', kind: 'base-cabinet', name: 'Base cabinet', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, rotationDegrees: 0 },
-      { id: 'upper-01', kind: 'wall-cabinet', name: 'Wall cabinet', dimensionsMm: { width: 914.4, height: 762, depth: 304.8 }, rotationDegrees: 0 },
+      { id: 'base-01', kind: 'base-cabinet', name: 'Base cabinet', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, rotationDegrees: 0, positionMm: { x: -650, y: 0, z: -300 } },
+      { id: 'upper-01', kind: 'wall-cabinet', name: 'Wall cabinet', dimensionsMm: { width: 914.4, height: 762, depth: 304.8 }, rotationDegrees: 0, positionMm: { x: -650, y: 1480, z: -300 } },
     ],
     proposal: { kind: 'resize', status: 'pending', objectId: 'base-01', objectName: 'Base cabinet', revision: 0, beforeMm: 914.4, afterMm: 1066.8 },
   }
@@ -141,4 +141,151 @@ test('adding an object selects it and undo restores the previous scene', () => {
   assert.deepEqual(undone.present, before.present)
   assert.ok(undone.present.some((object) => object.id === undone.selectedId))
   assert.deepEqual(reduce(undone, { kind: 'redo' }).present, added.present)
+})
+
+for (const axis of ['x', 'y', 'z'] satisfies Axis[]) {
+  for (const direction of [-1, 1] satisfies (-1 | 1)[]) {
+    test(`one tile moves only ${axis} in direction ${direction}`, () => {
+      const before = sample()
+      const moved = reduce(before, { kind: 'nudge', axis, direction })
+      const expected = { ...before.present[0].positionMm, [axis]: Math.round((before.present[0].positionMm[axis] + TILE_MM * direction) * 1000) / 1000 }
+      assert.deepEqual(moved.present[0].positionMm, expected)
+      assert.deepEqual(moved.present[1], before.present[1])
+      assert.equal(moved.past.length, 1)
+      assert.equal(moved.proposal.kind, 'none')
+    })
+  }
+}
+
+test('height can go below the floor and undo and redo restore it exactly', () => {
+  const before = sample()
+  const moved = reduce(before, { kind: 'nudge', axis: 'y', direction: -1 })
+  assert.equal(moved.present[0].positionMm.y, -TILE_MM)
+  const undone = reduce(moved, { kind: 'undo' })
+  assert.deepEqual(undone.present, before.present)
+  assert.deepEqual(reduce(undone, { kind: 'redo' }).present, moved.present)
+  const branched = reduce(undone, { kind: 'nudge', axis: 'x', direction: 1 })
+  assert.equal(branched.future.length, 0)
+})
+
+test('position boundaries reject the whole tile instead of clamping it', () => {
+  for (const axis of ['x', 'y', 'z'] satisfies Axis[]) {
+    for (const direction of [-1, 1] satisfies (-1 | 1)[]) {
+      const before = sample()
+      before.present[0].positionMm[axis] = direction * (POSITION_LIMIT_MM - TILE_MM / 2)
+      assert.equal(canNudge(before.present[0], axis, direction), false)
+      assert.equal(reduce(before, { kind: 'nudge', axis, direction }), before)
+    }
+  }
+  const invalid = sample(); invalid.present[0].positionMm.y = NaN
+  assert.equal(reduce(invalid, { kind: 'nudge', axis: 'x', direction: 1 }), invalid)
+  const empty = { ...sample(), present: [], selectedId: null }
+  assert.equal(reduce(empty, { kind: 'nudge', axis: 'y', direction: -1 }), empty)
+})
+
+test('new placement is stored once and survivors never move after edits or deletion', () => {
+  const added = reduce(reduce(sample(), { kind: 'add', objectKind: 'base-cabinet', id: 'new-1' }), { kind: 'add', objectKind: 'sink', id: 'new-2' })
+  const survivor = added.present.find((object) => object.id === 'new-2')
+  assert.ok(survivor)
+  const selected = reduce(added, { kind: 'select', id: 'new-1' })
+  const resized = reduce(selected, { kind: 'resize', dimension: 'width', valueMm: 2000 })
+  const deleted = reduce(resized, { kind: 'delete' })
+  const more = reduce(deleted, { kind: 'add', objectKind: 'wall', id: 'new-3' })
+  assert.deepEqual(more.present.find((object) => object.id === survivor.id), survivor)
+})
+
+test('movement invalidates a pending proposal without allowing stale approval', () => {
+  const moved = reduce(sample(), { kind: 'nudge', axis: 'z', direction: 1 })
+  const approved = reduce(moved, { kind: 'apply-proposal' })
+  assert.equal(approved, moved)
+  assert.equal(approved.present[0].dimensionsMm.width, 914.4)
+})
+
+test('set-position stores an absolute coordinate and rejects invalid or out-of-bounds values', () => {
+  const before = sample()
+  const moved = reduce(before, { kind: 'set-position', axis: 'x', valueMm: 123.456 })
+  assert.equal(moved.present[0].positionMm.x, 123.456)
+  assert.equal(moved.past.length, 1)
+  assert.equal(moved.proposal.kind, 'none')
+  for (const valueMm of [NaN, Infinity, -Infinity, 10000.1, -10000.1]) {
+    assert.deepEqual(reduce(before, { kind: 'set-position', axis: 'y', valueMm }), before)
+  }
+  const empty = { ...sample(), present: [], selectedId: null }
+  assert.deepEqual(reduce(empty, { kind: 'set-position', axis: 'x', valueMm: 100 }), empty)
+})
+
+test('set-position accepts fractional and negative coordinates including below the floor', () => {
+  const before = sample()
+  const a = reduce(before, { kind: 'set-position', axis: 'y', valueMm: -123.456 })
+  assert.equal(a.present[0].positionMm.y, -123.456)
+  const b = reduce(a, { kind: 'set-position', axis: 'x', valueMm: 0.123 })
+  assert.equal(b.present[0].positionMm.x, 0.123)
+  const c = reduce(b, { kind: 'set-position', axis: 'z', valueMm: -0.001 })
+  assert.equal(c.present[0].positionMm.z, -0.001)
+})
+
+test('set-position respects unit conversion rounding to three decimals', () => {
+  // 12 inches = 304.8 mm exactly, 3.94 in = 100.076 mm -> rounded to 100.076
+  const inchesToMm = 12 * 25.4
+  const moved = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: inchesToMm })
+  assert.equal(moved.present[0].positionMm.x, 304.8)
+  const fractional = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 100.076 })
+  assert.equal(fractional.present[0].positionMm.x, 100.076)
+})
+
+test('unchanged set-position preserves proposal and redo history', () => {
+  const initial = sample()
+  const undone = reduce(reduce(initial, { kind: 'set-position', axis: 'x', valueMm: 500 }), { kind: 'undo' })
+  assert.equal(undone.future.length, 1)
+  for (const before of [initial, undone]) {
+    const valueMm = before.present[0].positionMm.x
+    const after = reduce(before, { kind: 'set-position', axis: 'x', valueMm })
+    assert.equal(after, before)
+    assert.deepEqual(after.future, before.future)
+    assert.deepEqual(after.proposal, before.proposal)
+  }
+  // inch rounding case: stored 100 mm displayed as 3.94 in (100.076 mm) should not be considered unchanged if exact mm differs,
+  // but unchanged exact mm must be preserved
+  const stored100 = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 100 })
+  const displayedIn = Number(displayMeasurement(stored100.present[0].positionMm.x, 'in')) * 25.4
+  // displayedIn is 100.076, which is not equal to 100, so reducer will treat as change - UI must prevent this drift by not dispatching when draft === display string
+  // reducer correctly sees 100 vs 100.076 as different, which is expected; UI layer ensures unchanged display string does not dispatch
+  assert.notDeepEqual(reduce(stored100, { kind: 'set-position', axis: 'x', valueMm: displayedIn }), stored100)
+})
+
+test('typed position participates in undo and redo and clears redo on new edit', () => {
+  const a = reduce(sample(), { kind: 'set-position', axis: 'z', valueMm: 111 })
+  const b = reduce(a, { kind: 'set-position', axis: 'z', valueMm: 222 })
+  assert.equal(b.present[0].positionMm.z, 222)
+  const undone = reduce(b, { kind: 'undo' })
+  assert.equal(undone.present[0].positionMm.z, 111)
+  const undone2 = reduce(undone, { kind: 'undo' })
+  assert.equal(undone2.present[0].positionMm.z, -300)
+  assert.deepEqual(reduce(undone, { kind: 'redo' }).present[0].positionMm.z, 222)
+  const branched = reduce(undone, { kind: 'set-position', axis: 'z', valueMm: 999 })
+  assert.equal(branched.future.length, 0)
+  assert.deepEqual(reduce(branched, { kind: 'redo' }), branched)
+})
+
+test('arrow movement after a typed coordinate moves exactly one tile from that coordinate', () => {
+  const typed = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 123.45 })
+  assert.equal(typed.present[0].positionMm.x, 123.45)
+  const nudged = reduce(typed, { kind: 'nudge', axis: 'x', direction: 1 })
+  assert.ok(Math.abs(nudged.present[0].positionMm.x - (123.45 + TILE_MM)) < 0.001)
+  const nudgedY = reduce(reduce(sample(), { kind: 'set-position', axis: 'y', valueMm: 50.1 }), { kind: 'nudge', axis: 'y', direction: 1 })
+  assert.ok(Math.abs(nudgedY.present[0].positionMm.y - (50.1 + TILE_MM)) < 0.001)
+})
+
+test('set-position at ±10000 mm bounds is accepted and beyond is rejected', () => {
+  const atMax = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 10000 })
+  assert.equal(atMax.present[0].positionMm.x, 10000)
+  const atMin = reduce(sample(), { kind: 'set-position', axis: 'y', valueMm: -10000 })
+  assert.equal(atMin.present[0].positionMm.y, -10000)
+  assert.deepEqual(reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 10000.001 }), sample())
+})
+
+test('set-position invalidates pending proposal like other scene edits', () => {
+  const moved = reduce(sample(), { kind: 'set-position', axis: 'x', valueMm: 500 })
+  assert.equal(moved.proposal.kind, 'none')
+  assert.deepEqual(reduce(moved, { kind: 'apply-proposal' }), moved)
 })

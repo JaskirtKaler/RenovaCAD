@@ -12,6 +12,9 @@
     "dev:web": "vite --config vite.web.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "muse": "bun --no-env-file .muse/launch.mjs",
+    "muse:check": "bun --no-env-file .muse/launch.mjs --check",
+    "muse:test": "bun --no-env-file test ./.muse/launch.test.mjs",
     "build": "bun run typecheck && electron-vite build",
     "preview": "electron-vite preview"
   },

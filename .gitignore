@@ -7,3 +7,7 @@ dist/
 .env.*
 !.env.example
 coverage/
+.muse/bin/
+.muse/runtime/
+.agent-runtime/
+.audit/

@@ -1,38 +1,32 @@
-import { ChevronDown, Home, RotateCcw } from 'lucide-react'
-import { viewLabel, type Camera, type CameraView } from '../viewport'
+import { ChevronDown, Home } from 'lucide-react'
+import { CAMERA_VIEWS, createProjector, cubeRegions, selectedCameraView, viewLabel, type Camera, type CameraView } from '../viewport'
 
 interface ViewCubeProps {
   camera: Camera
   onView: (view: CameraView) => void
-  onReset: () => void
+  onHome: () => void
 }
 
-const cameraViews = [
-  { id: 'isometric', label: 'Isometric' },
-  { id: 'front', label: 'Front' },
-  { id: 'back', label: 'Back' },
-  { id: 'left', label: 'Left' },
-  { id: 'right', label: 'Right' },
-  { id: 'top', label: 'Top' },
-] satisfies { id: CameraView; label: string }[]
+const regions = cubeRegions()
+const cubeCorners = [{ x: -1, y: -1, z: -1 }, { x: 1, y: 1, z: 1 }, { x: 1, y: -1, z: -1 }, { x: -1, y: 1, z: 1 }, { x: -1, y: -1, z: 1 }, { x: 1, y: 1, z: -1 }, { x: 1, y: -1, z: 1 }, { x: -1, y: 1, z: -1 }]
 
-const cubeFaces = [
-  { view: 'top', label: 'TOP', points: '51,6 91,27 51,48 11,27', x: 51, y: 29 },
-  { view: 'front', label: 'FRONT', points: '11,27 51,48 51,89 11,67', x: 31, y: 61 },
-  { view: 'right', label: 'RIGHT', points: '51,48 91,27 91,67 51,89', x: 71, y: 61 },
-] satisfies { view: CameraView; label: string; points: string; x: number; y: number }[]
-
-export function ViewCube({ camera, onView, onReset }: ViewCubeProps) {
-  const selectedView = cameraViews.find(({ label }) => viewLabel(camera) === label)?.id ?? 'custom'
-  return <div className="orientation-control" role="group" aria-label="View orientation">
-    <div className="orientation-heading"><button type="button" className="icon-button" aria-label="Isometric view" title="Isometric view" onClick={() => onView('isometric')}><Home size={13} /></button><span aria-live="polite">{viewLabel(camera)}</span><button type="button" className="icon-button" aria-label="Reset camera" title="Reset camera and zoom" onClick={onReset}><RotateCcw size={13} /></button></div>
-    <svg className="view-cube" width="102" height="94" viewBox="0 0 102 94" role="group" aria-label="Clickable camera cube">
-      {cubeFaces.map(({ view, label, points, x, y }) => <g key={view} role="button" tabIndex={0} aria-label={`${label[0]}${label.slice(1).toLowerCase()} view`} aria-pressed={selectedView === view} className={`cube-face ${selectedView === view ? 'selected' : ''}`} onClick={() => onView(view)} onKeyDown={(event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return
-        event.preventDefault()
-        onView(view)
-      }}><polygon points={points} /><text x={x} y={y} textAnchor="middle" dominantBaseline="middle">{label}</text></g>)}
+export function ViewCube({ camera, onView, onHome }: ViewCubeProps) {
+  const selectedView = selectedCameraView(camera)?.id ?? 'custom'
+  const { project, isVisible } = createProjector(cubeCorners, { ...camera, projection: 'orthographic' }, 1)
+  const cubePoint = (p: ReturnType<typeof project>) => ({ x: 80 + (p.x - 500) * 0.145, y: 80 + (p.y - 400) * 0.145 })
+  const visible = regions.filter(isVisible).sort((a, b) => project(a.center).depth - project(b.center).depth)
+  return <div className="orientation-control" role="group" aria-label="View orientation" data-camera-control="true">
+    <div className="orientation-heading"><button type="button" className="icon-button" aria-label="Home view" title="Home view and fit scene" onClick={onHome}><Home size={15} /></button><span aria-live="polite">{viewLabel(camera)}</span></div>
+    <svg className="view-cube" width="144" height="144" viewBox="0 0 160 160" role="group" aria-label="Camera cube with face, edge, and corner views">
+      {visible.map((region) => {
+        const center = cubePoint(project(region.center))
+        return <g key={region.id} role="button" tabIndex={0} aria-label={`${region.label} view`} aria-pressed={selectedView === region.id} className={`cube-region cube-${region.kind} ${selectedView === region.id ? 'selected' : ''}`} onClick={() => onView(region.id)} onKeyDown={(event) => {
+          if (event.key !== 'Enter' && event.key !== ' ') return
+          event.preventDefault(); event.stopPropagation(); onView(region.id)
+        }}><title>{region.label} view</title><polygon points={region.points.map((point) => { const p = cubePoint(project(point)); return `${p.x},${p.y}` }).join(' ')} />{region.kind === 'face' && <text x={center.x} y={center.y} textAnchor="middle" dominantBaseline="middle">{region.label.toUpperCase()}</text>}</g>
+      })}
     </svg>
-    <div className="view-select"><select aria-label="Camera view" value={selectedView} onChange={(event) => { const preset = cameraViews.find(({ id }) => id === event.target.value); if (preset) onView(preset.id) }}>{selectedView === 'custom' && <option value="custom" disabled>Custom view</option>}{cameraViews.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</select><ChevronDown size={11} /></div>
+    <div className="view-select"><select aria-label="All views" value={selectedView} onChange={(event) => { const preset = CAMERA_VIEWS.find(({ id }) => id === event.target.value); if (preset) onView(preset.id) }}>{selectedView === 'custom' && <option value="custom" disabled>Custom view</option>}{(['face', 'edge', 'corner'] satisfies typeof CAMERA_VIEWS[number]['kind'][]).map((kind) => <optgroup key={kind} label={`${kind[0].toUpperCase()}${kind.slice(1)} views`}>{CAMERA_VIEWS.filter((view) => view.kind === kind).map(({ id, label }) => <option key={id} value={id}>{label}</option>)}</optgroup>)}</select><ChevronDown size={11} /></div>
+    <span className="cube-hint">Faces · Edges · Corners</span>
   </div>
 }

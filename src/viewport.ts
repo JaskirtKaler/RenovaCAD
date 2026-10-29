@@ -1,6 +1,5 @@
-import type { SceneObject } from './workspace'
+import { TILE_MM, type SceneObject } from './workspace'
 
-export type CameraView = 'isometric' | 'front' | 'back' | 'left' | 'right' | 'top'
 export type Projection = 'perspective' | 'orthographic'
 export interface Camera { yaw: number; pitch: number; projection: Projection }
 export interface Point3 { x: number; y: number; z: number }
@@ -14,29 +13,45 @@ const tau = Math.PI * 2
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(value, max))
 const normalize = (angle: number) => ((angle + Math.PI) % tau + tau) % tau - Math.PI
 
+function preset<Id extends string>(id: Id, label: string, x: number, y: number, z: number) {
+  const axes = [x, y, z].filter((value) => value !== 0).length
+  const kind: 'face' | 'edge' | 'corner' = axes === 1 ? 'face' : axes === 2 ? 'edge' : 'corner'
+  return { id, label, direction: { x, y, z }, kind }
+}
+
+export const CAMERA_VIEWS = [
+  preset('front', 'Front', 0, 0, 1), preset('back', 'Back', 0, 0, -1),
+  preset('left', 'Left', -1, 0, 0), preset('right', 'Right', 1, 0, 0),
+  preset('top', 'Top', 0, 1, 0), preset('bottom', 'Bottom', 0, -1, 0),
+  preset('top-front', 'Top front', 0, 1, 1), preset('top-back', 'Top back', 0, 1, -1),
+  preset('top-left', 'Top left', -1, 1, 0), preset('top-right', 'Top right', 1, 1, 0),
+  preset('bottom-front', 'Bottom front', 0, -1, 1), preset('bottom-back', 'Bottom back', 0, -1, -1),
+  preset('bottom-left', 'Bottom left', -1, -1, 0), preset('bottom-right', 'Bottom right', 1, -1, 0),
+  preset('front-left', 'Front left', -1, 0, 1), preset('front-right', 'Front right', 1, 0, 1),
+  preset('back-left', 'Back left', -1, 0, -1), preset('back-right', 'Back right', 1, 0, -1),
+  preset('top-front-left', 'Top front left', -1, 1, 1), preset('top-front-right', 'Top front right', 1, 1, 1),
+  preset('top-back-left', 'Top back left', -1, 1, -1), preset('top-back-right', 'Top back right', 1, 1, -1),
+  preset('bottom-front-left', 'Bottom front left', -1, -1, 1), preset('bottom-front-right', 'Bottom front right', 1, -1, 1),
+  preset('bottom-back-left', 'Bottom back left', -1, -1, -1), preset('bottom-back-right', 'Bottom back right', 1, -1, -1),
+]
+export type CameraView = typeof CAMERA_VIEWS[number]['id']
+export const HOME_VIEW: CameraView = 'top-front-right'
+
 export function cameraForView(view: CameraView, projection: Projection): Camera {
-  switch (view) {
-    case 'isometric': return { yaw: Math.PI / 4, pitch: Math.atan(1 / Math.sqrt(2)), projection }
-    case 'front': return { yaw: 0, pitch: 0, projection }
-    case 'back': return { yaw: Math.PI, pitch: 0, projection }
-    case 'left': return { yaw: -Math.PI / 2, pitch: 0, projection }
-    case 'right': return { yaw: Math.PI / 2, pitch: 0, projection }
-    case 'top': return { yaw: 0, pitch: Math.PI / 2, projection }
-    default: { const exhaustive: never = view; return exhaustive }
-  }
+  const { direction } = CAMERA_VIEWS.find((item) => item.id === view) ?? CAMERA_VIEWS[0]
+  return { yaw: Math.atan2(direction.x, direction.z), pitch: Math.atan2(direction.y, Math.hypot(direction.x, direction.z)), projection }
+}
+
+export function selectedCameraView(camera: Camera) {
+  const direction = cameraDirection(camera)
+  return CAMERA_VIEWS.find((item) => {
+    const length = Math.hypot(item.direction.x, item.direction.y, item.direction.z)
+    return (direction.x * item.direction.x + direction.y * item.direction.y + direction.z * item.direction.z) / length > 0.9998
+  })
 }
 
 export function viewLabel(camera: Camera): string {
-  const close = (a: number, b: number) => Math.abs(normalize(a - b)) < 0.025
-  if (close(camera.pitch, Math.PI / 2)) return 'Top'
-  if (close(camera.yaw, Math.PI / 4) && close(camera.pitch, Math.atan(1 / Math.sqrt(2)))) return 'Isometric'
-  if (close(camera.pitch, 0)) {
-    if (close(camera.yaw, 0)) return 'Front'
-    if (close(camera.yaw, Math.PI)) return 'Back'
-    if (close(camera.yaw, -Math.PI / 2)) return 'Left'
-    if (close(camera.yaw, Math.PI / 2)) return 'Right'
-  }
-  return 'Orbit'
+  return selectedCameraView(camera)?.label ?? 'Orbit'
 }
 
 export function orbitCamera(camera: Camera, dx: number, dy: number): Camera {
@@ -48,17 +63,49 @@ export function cameraDirection(camera: Camera): Point3 {
 }
 
 export function sceneBoxes(objects: SceneObject[]): SceneBox[] {
-  let nextX = -650, nextZ = 1100, rowDepth = 0
-  return objects.map((object) => {
-    if (object.id === 'base-01') return { object, origin: { x: -650, y: 0, z: -300 } }
-    if (object.id === 'upper-01') return { object, origin: { x: -650, y: 1480, z: -300 } }
-    if (object.id === 'tall-01') return { object, origin: { x: 650, y: 0, z: -300 } }
-    const { width, depth } = object.dimensionsMm
-    if (nextX > -650 && nextX + width > 2400) { nextX = -650; nextZ += rowDepth + 260; rowDepth = 0 }
-    const origin = { x: nextX, y: object.kind === 'wall-cabinet' ? 1480 : 0, z: nextZ }
-    nextX += width + 180
-    rowDepth = Math.max(rowDepth, depth)
-    return { object, origin }
+  return objects.map((object) => ({ object, origin: object.positionMm }))
+}
+
+export function sceneFrame(objects: SceneObject[]): Point3[] {
+  const vertices = sceneBoxes(objects).flatMap((box) => boxFaces(box).flatMap((face) => face.points))
+  if (!vertices.length) return [{ x: -770, y: 0, z: -420 }, { x: 1250, y: 2400, z: 800 }]
+  const bounds = boundsOf(vertices)
+  return [...vertices, { x: bounds.min.x - 120, y: 0, z: bounds.min.z - 120 }, { x: bounds.max.x + 140, y: 0, z: bounds.max.z + 180 }]
+}
+
+export function floorGridSegments(extent = 25000) {
+  const segments: { from: Point3; to: Point3; major: boolean; axis: boolean }[] = []
+  const tiles = Math.floor(extent / TILE_MM)
+  for (let index = -tiles; index <= tiles; index++) {
+    const coordinate = index * TILE_MM
+    segments.push({ from: { x: coordinate, y: 0, z: -extent }, to: { x: coordinate, y: 0, z: extent }, major: index % 5 === 0, axis: index === 0 })
+    segments.push({ from: { x: -extent, y: 0, z: coordinate }, to: { x: extent, y: 0, z: coordinate }, major: index % 5 === 0, axis: index === 0 })
+  }
+  return segments
+}
+
+export const FLOOR_GRID = floorGridSegments()
+
+export function cubeRegions() {
+  const bevel = 0.62
+  const axes = ['x', 'y', 'z'] satisfies (keyof Point3)[]
+  return CAMERA_VIEWS.map((view) => {
+    const active = axes.filter((axis) => view.direction[axis] !== 0)
+    const free = axes.filter((axis) => view.direction[axis] === 0)
+    const point = (): Point3 => ({ x: 0, y: 0, z: 0 })
+    let points: Point3[]
+    if (view.kind === 'face') {
+      points = [[-bevel, -bevel], [bevel, -bevel], [bevel, bevel], [-bevel, bevel]].map(([a, b]) => {
+        const p = point(); p[active[0]] = view.direction[active[0]]; p[free[0]] = a; p[free[1]] = b; return p
+      })
+    } else if (view.kind === 'edge') {
+      points = [[1, bevel, -bevel], [1, bevel, bevel], [bevel, 1, bevel], [bevel, 1, -bevel]].map(([a, b, c]) => {
+        const p = point(); p[active[0]] = a * view.direction[active[0]]; p[active[1]] = b * view.direction[active[1]]; p[free[0]] = c; return p
+      })
+    } else {
+      points = axes.map((outer) => ({ x: view.direction.x * (outer === 'x' ? 1 : bevel), y: view.direction.y * (outer === 'y' ? 1 : bevel), z: view.direction.z * (outer === 'z' ? 1 : bevel) }))
+    }
+    return { ...view, points, normal: view.direction, center: { x: points.reduce((sum, p) => sum + p.x, 0) / points.length, y: points.reduce((sum, p) => sum + p.y, 0) / points.length, z: points.reduce((sum, p) => sum + p.z, 0) / points.length } }
   })
 }
 
@@ -99,10 +146,16 @@ export function createProjector(points: Point3[], camera: Camera, zoom: number) 
   const distance = radius * 3.5
   const direction = cameraDirection(camera)
   const viewer = { x: center.x + direction.x * distance, y: center.y + direction.y * distance, z: center.z + direction.z * distance }
+  const nearDepth = distance * 0.92
+  const depthOf = (point: Point3) => (point.x - center.x) * direction.x + (point.y - center.y) * direction.y + (point.z - center.z) * direction.z
+  const intersection = (a: Point3, b: Point3) => {
+    const fraction = (nearDepth - depthOf(a)) / (depthOf(b) - depthOf(a))
+    return { x: a.x + (b.x - a.x) * fraction, y: a.y + (b.y - a.y) * fraction, z: a.z + (b.z - a.z) * fraction }
+  }
   const raw = (point: Point3): ProjectedPoint => {
     const x = point.x - center.x, y = point.y - center.y, z = point.z - center.z
     const depth = x * direction.x + y * direction.y + z * direction.z
-    const factor = camera.projection === 'perspective' ? distance / (distance - depth) : 1
+    const factor = camera.projection === 'perspective' ? distance / Math.max(distance * 0.08, distance - depth) : 1
     return { x: (x * Math.cos(camera.yaw) - z * Math.sin(camera.yaw)) * factor, y: (x * Math.sin(camera.yaw) * Math.sin(camera.pitch) - y * Math.cos(camera.pitch) + z * Math.cos(camera.yaw) * Math.sin(camera.pitch)) * factor, depth }
   }
   const projected = points.length ? points.map(raw) : [raw(bounds.min), raw(bounds.max)]
@@ -113,9 +166,23 @@ export function createProjector(points: Point3[], camera: Camera, zoom: number) 
     const p = raw(point)
     return { x: 500 + (p.x - (minX + maxX) / 2) * scale, y: 400 + (p.y - (minY + maxY) / 2) * scale, depth: p.depth }
   }
-  const isVisible = (face: BoxFace): boolean => {
+  const isVisible = (face: Pick<BoxFace, 'normal' | 'center'>): boolean => {
     const vector = camera.projection === 'perspective' ? { x: viewer.x - face.center.x, y: viewer.y - face.center.y, z: viewer.z - face.center.z } : direction
     return face.normal.x * vector.x + face.normal.y * vector.y + face.normal.z * vector.z > 0.0001
   }
-  return { project, isVisible }
+  const isInFront = (point: Point3) => camera.projection === 'orthographic' || depthOf(point) <= nearDepth
+  const projectSegment = (a: Point3, b: Point3): [ProjectedPoint, ProjectedPoint] | null => {
+    if (!isInFront(a) && !isInFront(b)) return null
+    return [project(isInFront(a) ? a : intersection(a, b)), project(isInFront(b) ? b : intersection(a, b))]
+  }
+  const projectPolygon = (vertices: Point3[]): ProjectedPoint[] => {
+    const clipped: Point3[] = []
+    for (let index = 0; index < vertices.length; index++) {
+      const a = vertices[index], b = vertices[(index + 1) % vertices.length]
+      if (isInFront(a)) clipped.push(a)
+      if (isInFront(a) !== isInFront(b)) clipped.push(intersection(a, b))
+    }
+    return clipped.map(project)
+  }
+  return { project, isVisible, isInFront, projectSegment, projectPolygon }
 }
