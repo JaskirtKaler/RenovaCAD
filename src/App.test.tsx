@@ -7,18 +7,20 @@ import { CAMERA_VIEWS } from './viewport'
 // These tests render an in-memory React tree. They do not exercise a browser,
 // focus behavior, image decoding, file dialogs, scrolling position, or layout.
 const listeners = new Map<string, Set<EventListener>>()
-const replacedGlobals = ['IS_REACT_ACT_ENVIRONMENT', 'HTMLElement', 'Element', 'HTMLInputElement', 'HTMLTextAreaElement', 'document', 'window']
+const replacedGlobals = ['IS_REACT_ACT_ENVIRONMENT', 'HTMLElement', 'Element', 'HTMLInputElement', 'HTMLTextAreaElement', 'document', 'window', 'FileReader', 'navigator', 'crypto']
 const originalGlobals = new Map(replacedGlobals.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]))
 class ElementStub { tagName = 'DIV'; isContentEditable = false; focus() {}; closest(): ElementStub | null { return null } }
 class HtmlElementStub extends ElementStub {}
 class InputStub extends HtmlElementStub {}
 class TextareaStub extends HtmlElementStub {}
+class FileReaderStub { result: string | null = null; onload: (() => void) | null = null; onerror: (() => void) | null = null; readAsDataURL() { this.result = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII='; setTimeout(() => this.onload?.(), 0) } }
 Object.defineProperties(globalThis, {
   IS_REACT_ACT_ENVIRONMENT: { configurable: true, value: true },
   HTMLElement: { configurable: true, value: HtmlElementStub },
   Element: { configurable: true, value: ElementStub },
   HTMLInputElement: { configurable: true, value: InputStub },
   HTMLTextAreaElement: { configurable: true, value: TextareaStub },
+  FileReader: { configurable: true, value: FileReaderStub },
   document: { configurable: true, value: {
     activeElement: null, querySelector: () => null,
     addEventListener: (kind: string, listener: EventListener) => {
@@ -261,10 +263,13 @@ test('help and settings close through their buttons, backdrop, and Escape', asyn
   assert.equal(root().findAllByProps({ role: 'dialog' }).length, 0)
 })
 
-test('save explains the current milestone and its notice can be dismissed', async () => {
-  await click(button('Save project'))
-  assert.match(text(root().findByProps({ role: 'status' })), /saving will be added/i)
-  await click(button('Dismiss notification')); assert.equal(root().findAllByProps({ role: 'status' }).length, 0)
+test('save shows browser-only honest message when native saving is unavailable', async () => {
+  // Save button now labels as "Save project (⌘S)" in header
+  const save = root().findAll((n) => n.type === 'button' && String(n.props['aria-label']).includes('Save project'))[0]
+  assert.ok(save, 'save button missing')
+  await click(save)
+  // In test environment, renovacadProject bridge is absent, so saving shows honest browser message
+  assert.match(text(root()), /not available in browser preview/i)
 })
 
 test('the composer sends trimmed text and respects multiline and composition Enter', async () => {
@@ -284,15 +289,17 @@ test('the composer sends trimmed text and respects multiline and composition Ent
   assert.equal(composer().props.value, '')
 })
 
-test('the photo handler accepts and replaces local files with object URLs', async () => {
+test('the photo handler accepts and replaces local files with data URLs', async () => {
   const upload = () => host('input', (node) => node.props.type === 'file')
   for (const name of ['kitchen.png', 'replacement.png']) {
     const target = { files: [new File(['image fixture'], name, { type: 'image/png' })], value: name }
     await act(() => upload().props.onChange({ target }))
+    // Wait for FileReader async
+    await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
     assert.equal(target.value, '')
     assert.equal(selectedTab(), 'tab-photo')
     const image = host('img', (node) => node.props.alt === 'Your kitchen reference')
-    assert.match(image.props.src, /^blob:/)
+    assert.match(image.props.src, /^data:image\/png;base64,/)
     assert.match(text(root()), new RegExp(name.replace('.', '\\.')))
   }
 })

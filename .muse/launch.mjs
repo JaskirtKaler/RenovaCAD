@@ -34,6 +34,10 @@ export function buildLaunchSpec({ root, executable, settings, environment = proc
     TEMP: join(scratch, 'tmp'),
     BUN_INSTALL_CACHE_DIR: join(scratch, 'cache', 'bun'),
     PIP_CACHE_DIR: join(scratch, 'cache', 'pip'),
+    GOCACHE: join(scratch, 'cache', 'go-build'),
+    GOMODCACHE: join(scratch, 'cache', 'go-mod'),
+    GOTMPDIR: join(scratch, 'tmp', 'go'),
+    ELECTRON_CACHE: join(scratch, 'cache', 'electron'),
     PYTHONDONTWRITEBYTECODE: '1',
     PYTHONNOUSERSITE: '1',
     MUSE_NO_AUTO_UPDATE: '1',
@@ -66,6 +70,7 @@ export function prepareLaunch(root, environment = process.env) {
   for (const path of [
     spec.env.XDG_CONFIG_HOME, spec.env.XDG_DATA_HOME, spec.env.XDG_CACHE_HOME,
     spec.env.TMPDIR, spec.env.BUN_INSTALL_CACHE_DIR, spec.env.PIP_CACHE_DIR,
+    spec.env.GOCACHE, spec.env.GOMODCACHE, spec.env.GOTMPDIR, spec.env.ELECTRON_CACHE,
     join(spec.env.XDG_CONFIG_HOME, 'muse'), join(spec.env.XDG_DATA_HOME, 'muse'),
     join(spec.env.XDG_CACHE_HOME, 'muse'),
   ]) {
@@ -95,14 +100,30 @@ export function checkPrerequisites(spec) {
   return problems
 }
 
+export function syncCommandPermissions(spec) {
+  const helper = join(spec.cwd, '.muse', 'sync-permissions.py')
+  assertLocal(spec.cwd, helper)
+  const conda = Bun.which('conda', { PATH: spec.env.PATH })
+  if (!conda || Bun.version !== '1.3.8') throw new Error('Bun 1.3.8 and musedev are required to synchronize permissions.')
+  const result = Bun.spawnSync([conda, 'run', '-n', 'musedev', 'python', '-B', helper], {
+    cwd: spec.cwd, env: { ...spec.env, META_API_KEY: '' }, stdout: 'pipe', stderr: 'pipe',
+  })
+  if (result.exitCode !== 0) throw new Error('Muse project permissions could not be synchronized.')
+}
+
 export async function main(args = process.argv.slice(2)) {
-  if (args.length > 1 || (args.length === 1 && args[0] !== '--check')) {
-    console.error('Use bun run muse or bun run muse:check. Additional Muse flags are not accepted.')
+  if (args.length > 1 || (args.length === 1 && !['--check', '--permissions'].includes(args[0]))) {
+    console.error('Use bun run muse, bun run muse:check, or bun run muse:permissions. Additional Muse flags are not accepted.')
     return 1
   }
   try {
     const root = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'))
     const spec = prepareLaunch(root)
+    if (args[0] === '--permissions') {
+      syncCommandPermissions(spec)
+      console.log('Project development command permissions synchronized. The sandbox and human approvals remain enabled. No API request was made.')
+      return 0
+    }
     const problems = checkPrerequisites(spec)
     if (problems.length) {
       for (const problem of problems) console.error(problem)
@@ -112,6 +133,7 @@ export async function main(args = process.argv.slice(2)) {
       console.log('Muse is ready. Bun 1.3.8, musedev, API key presence, and CLI presence checked. No API request was made.')
       return 0
     }
+    syncCommandPermissions(spec)
     const child = Bun.spawn([spec.executable, ...spec.args], {
       cwd: spec.cwd,
       env: spec.env,
@@ -121,7 +143,7 @@ export async function main(args = process.argv.slice(2)) {
     })
     return await child.exited
   } catch {
-    console.error('Muse could not start. Check .env values, project-local paths, and installation. No credential values are printed.')
+    console.error('Muse could not start. Check local settings, project paths, permission storage, and installation. No credential values are printed.')
     return 1
   }
 }

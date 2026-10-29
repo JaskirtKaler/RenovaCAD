@@ -1,10 +1,11 @@
-import { app, BrowserWindow, Menu, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, Menu, ipcMain } from 'electron'
 import { randomBytes } from 'node:crypto'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, resolve, basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'node:net'
 import { existsSync, readFileSync } from 'node:fs'
+import { readFile, writeFile, rename, unlink } from 'node:fs/promises'
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url))
 
@@ -15,6 +16,7 @@ let apiAddr: string | null = null
 let goProcess: ChildProcess | null = null
 let goError: string | null = null
 let goReady = false
+let isDirty = false
 
 function loadDotEnv(path: string): void {
   if (!existsSync(path)) return
@@ -182,6 +184,34 @@ function createWindow(): void {
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event) => event.preventDefault())
 
+  // Warn before closing window with unsaved changes — renderer also handles beforeunload, this is a second native guard for quit via menu/close button.
+  window.on('close', async (event) => {
+    if (!isDirty) return
+    // We must prevent default and ask renderer + native dialog; but we need async flow.
+    // Use a synchronous flag to avoid infinite recursion.
+    const win = window
+    if ((win as unknown as { _confirmedClose?: boolean })._confirmedClose) return
+    event.preventDefault()
+    const choice = await dialog.showMessageBox(win, {
+      type: 'warning',
+      buttons: ['Cancel', 'Discard Changes', 'Save'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'You have unsaved changes. Save before quitting?',
+      detail: 'Your changes will be lost if you close without saving.',
+    })
+    if (choice.response === 0) return // Cancel
+    if (choice.response === 2) {
+      // Save — ask renderer to save (it will call project:save)
+      win.webContents.send('project:request-save-before-quit')
+      // Give renderer 30s to save and then close; renderer will signal via project:confirm-close
+      return
+    }
+    // Discard
+    ;(win as unknown as { _confirmedClose: boolean })._confirmedClose = true
+    win.close()
+  })
+
   const rendererUrl = process.env.ELECTRON_RENDERER_URL
   if (rendererUrl && !app.isPackaged) {
     void window.loadURL(rendererUrl)
@@ -192,7 +222,7 @@ function createWindow(): void {
 
 app.setName('RenovaCAD')
 
-// IPC: narrow bridge — renderer sends only instruction/scene, main attaches token and forwards to loopback Go service.
+// IPC: narrow bridge — renderer sends only instruction/scene or photo, main attaches token and forwards to loopback Go service.
 ipcMain.handle('ai:propose-edit', async (_event, payload: unknown): Promise<unknown> => {
   if (!apiAddr) {
     return { kind: 'error', code: 'service_unavailable', message: goError ?? 'AI service is not running. Start the Go backend or check services/api/.env for BASETEN_API_KEY.' , httpStatus: 503 }
@@ -239,6 +269,190 @@ ipcMain.handle('ai:propose-edit', async (_event, payload: unknown): Promise<unkn
 
 ipcMain.handle('ai:status', async (): Promise<GoStatus> => {
   return { ready: goReady && !!apiAddr, address: apiAddr, error: goError }
+})
+
+ipcMain.handle('ai:analyze-photo', async (_event, payload: unknown): Promise<unknown> => {
+  if (!apiAddr) {
+    return { kind: 'error', code: 'service_unavailable', message: goError ?? 'AI service is not running. Start the Go backend or check services/api/.env for BASETEN_API_KEY.', httpStatus: 503 }
+  }
+  if (!payload || typeof payload !== 'object') {
+    return { kind: 'error', code: 'invalid_request', message: 'Invalid request shape.', httpStatus: 400 }
+  }
+  // Basic validation: must contain image with dataUrl
+  const p = payload as { image?: { mimeType?: string; dataUrl?: string } }
+  if (!p.image || typeof p.image.dataUrl !== 'string' || !p.image.dataUrl.startsWith('data:image')) {
+    return { kind: 'error', code: 'invalid_request', message: 'Image is required (JPG, PNG, or WEBP).', httpStatus: 400 }
+  }
+  if (p.image.dataUrl.length > 8 * 1024 * 1024) {
+    return { kind: 'error', code: 'invalid_request', message: 'Image too large (limit 5 MB).', httpStatus: 400 }
+  }
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (apiToken) headers['Authorization'] = `Bearer ${apiToken}`
+    const res = await fetch(`http://${apiAddr}/api/ai/analyze-photo`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(22000),
+    } as RequestInit)
+    const text = await res.text()
+    let body: unknown
+    try { body = JSON.parse(text) } catch { body = { error: { code: res.ok ? 'invalid_provider_response' : 'provider_error', message: text.slice(0, 600) } } }
+    if (!res.ok) {
+      const err = body as { error?: { code?: string; message?: string } }
+      const code = err?.error?.code ?? (res.status === 401 ? 'unauthorized' : res.status === 504 ? 'provider_timeout' : 'provider_error')
+      const msg = err?.error?.message ?? `Request failed (${res.status})`
+      return { kind: 'error', code, message: msg, httpStatus: res.status }
+    }
+    const ok = body as { kind?: string }
+    if (ok.kind === 'analysis') return body
+    return { kind: 'error', code: 'invalid_provider_response', message: 'Unexpected response from AI service.', httpStatus: 502 }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('timeout') || msg.includes('Abort')) {
+      return { kind: 'error', code: 'provider_timeout', message: 'AI request timed out. Try again.', httpStatus: 504 }
+    }
+    if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      return { kind: 'error', code: 'service_unavailable', message: goError ?? 'AI service is unreachable. Check that the Go backend is running on ' + apiAddr, httpStatus: 503 }
+    }
+    return { kind: 'error', code: 'provider_error', message: 'AI request failed. Try again.', httpStatus: 502 }
+  }
+})
+
+ipcMain.handle('ai:propose-layout', async (_event, payload: unknown): Promise<unknown> => {
+  if (!apiAddr) {
+    return { kind: 'error', code: 'service_unavailable', message: goError ?? 'AI service is not running. Start the Go backend or check services/api/.env for BASETEN_API_KEY.', httpStatus: 503 }
+  }
+  if (!payload || typeof payload !== 'object') {
+    return { kind: 'error', code: 'invalid_request', message: 'Invalid request shape.', httpStatus: 400 }
+  }
+  const p = payload as { image?: { mimeType?: string; dataUrl?: string } }
+  if (!p.image || typeof p.image.dataUrl !== 'string' || !p.image.dataUrl.startsWith('data:image')) {
+    return { kind: 'error', code: 'invalid_request', message: 'Image is required (JPG, PNG, or WEBP).', httpStatus: 400 }
+  }
+  if (p.image.dataUrl.length > 8 * 1024 * 1024) {
+    return { kind: 'error', code: 'invalid_request', message: 'Image too large (limit 5 MB).', httpStatus: 400 }
+  }
+  try {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    if (apiToken) headers['Authorization'] = `Bearer ${apiToken}`
+    const res = await fetch(`http://${apiAddr}/api/ai/propose-layout`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(24000),
+    } as RequestInit)
+    const text = await res.text()
+    let body: unknown
+    try { body = JSON.parse(text) } catch { body = { error: { code: res.ok ? 'invalid_provider_response' : 'provider_error', message: text.slice(0, 600) } } }
+    if (!res.ok) {
+      const err = body as { error?: { code?: string; message?: string } }
+      const code = err?.error?.code ?? (res.status === 401 ? 'unauthorized' : res.status === 504 ? 'provider_timeout' : 'provider_error')
+      const msg = err?.error?.message ?? `Request failed (${res.status})`
+      return { kind: 'error', code, message: msg, httpStatus: res.status }
+    }
+    const ok = body as { kind?: string }
+    if (ok.kind === 'layout_draft' || ok.kind === 'needs_info') return body
+    return { kind: 'error', code: 'invalid_provider_response', message: 'Unexpected response from AI service.', httpStatus: 502 }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    if (msg.includes('timeout') || msg.includes('Abort')) {
+      return { kind: 'error', code: 'provider_timeout', message: 'AI request timed out. Try again.', httpStatus: 504 }
+    }
+    if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      return { kind: 'error', code: 'service_unavailable', message: goError ?? 'AI service is unreachable. Check that the Go backend is running on ' + apiAddr, httpStatus: 503 }
+    }
+    return { kind: 'error', code: 'provider_error', message: 'AI request failed. Try again.', httpStatus: 502 }
+  }
+})
+
+// Project persistence: narrow native dialogs + safe file access
+const PROJECT_FILTERS = [{ name: 'RenovaCAD Project', extensions: ['renovacad'] }]
+
+ipcMain.handle('project:set-dirty', async (_event, dirty: unknown) => {
+  isDirty = !!dirty
+  const wins = BrowserWindow.getAllWindows()
+  for (const w of wins) {
+    w.setDocumentEdited(!!dirty)
+  }
+  return { ok: true }
+})
+
+ipcMain.handle('project:confirm-close', async () => {
+  const wins = BrowserWindow.getAllWindows()
+  for (const w of wins) {
+    ;(w as unknown as { _confirmedClose: boolean })._confirmedClose = true
+    w.close()
+  }
+  return { ok: true }
+})
+
+ipcMain.handle('project:confirm-unsaved', async (_event, message?: string): Promise<{ choice: 'save' | 'discard' | 'cancel' }> => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const res = await dialog.showMessageBox(win ?? undefined as unknown as BrowserWindow, {
+    type: 'warning',
+    buttons: ['Cancel', 'Discard Changes', 'Save'],
+    defaultId: 0,
+    cancelId: 0,
+    message: message ?? 'You have unsaved changes. Save before continuing?',
+    detail: 'Your changes will be lost if you continue without saving.',
+  })
+  if (res.response === 1) return { choice: 'discard' }
+  if (res.response === 2) return { choice: 'save' }
+  return { choice: 'cancel' }
+})
+
+ipcMain.handle('project:open', async (): Promise<{ canceled: boolean; filePath?: string; content?: string; error?: string }> => {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const res = await dialog.showOpenDialog(win ?? undefined as unknown as BrowserWindow, {
+    title: 'Open RenovaCAD Project',
+    filters: PROJECT_FILTERS,
+    properties: ['openFile'],
+  })
+  if (res.canceled || !res.filePaths[0]) return { canceled: true }
+  const filePath = res.filePaths[0]
+  try {
+    // Basic size check before reading
+    const content = await readFile(filePath, 'utf8')
+    if (content.length > 12 * 1024 * 1024) return { canceled: false, error: 'Project file too large (limit 12 MB)' }
+    return { canceled: false, filePath, content }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    return { canceled: false, error: `Failed to read project: ${msg}` }
+  }
+})
+
+ipcMain.handle('project:save', async (_event, payload: unknown): Promise<{ canceled: boolean; filePath?: string; error?: string }> => {
+  const data = payload as { filePath?: string | null; content: string; defaultName?: string }
+  if (!data || typeof data.content !== 'string') return { canceled: false, error: 'Invalid save payload' }
+  if (data.content.length > 12 * 1024 * 1024) return { canceled: false, error: 'Project is too large to save (limit 12 MB). Try a smaller reference photo.' }
+  let filePath = data.filePath ?? null
+  if (!filePath) {
+    const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const res = await dialog.showSaveDialog(win ?? undefined as unknown as BrowserWindow, {
+      title: 'Save RenovaCAD Project',
+      filters: PROJECT_FILTERS,
+      defaultPath: (data.defaultName ?? 'Kitchen Remodel') + '.renovacad',
+    })
+    if (res.canceled || !res.filePath) return { canceled: true }
+    filePath = res.filePath
+    if (!filePath.endsWith('.renovacad')) filePath += '.renovacad'
+  }
+  // Safe atomic write: temp file then rename
+  const dir = filePath.slice(0, filePath.lastIndexOf('/')) || '.'
+  const base = basename(filePath)
+  const tempPath = join(dirname(filePath), `.${base}.tmp-${randomBytes(4).toString('hex')}`)
+  try {
+    await writeFile(tempPath, data.content, 'utf8')
+    await rename(tempPath, filePath)
+    // On non-POSIX, rename is atomic if same directory; we already ensured same dir.
+    return { canceled: false, filePath }
+  } catch (e) {
+    try { await unlink(tempPath) } catch {}
+    const msg = e instanceof Error ? e.message : String(e)
+    // Explain any platform limitations: atomic rename may not be atomic on all filesystems, but preserves original on failure.
+    return { canceled: false, error: `Failed to save project: ${msg}. Your previous file (if any) was not overwritten.` }
+  }
 })
 
 void app.whenReady().then(async () => {

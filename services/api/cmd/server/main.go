@@ -8,9 +8,11 @@ import (
 	"os"
 	"time"
 
+	"renovacad/services/api/internal/analyze"
 	"renovacad/services/api/internal/baseten"
 	"renovacad/services/api/internal/config"
 	"renovacad/services/api/internal/httpapi"
+	"renovacad/services/api/internal/layout"
 	"renovacad/services/api/internal/proposal"
 )
 
@@ -24,8 +26,12 @@ func main() {
 
 	provider := baseten.New(cfg.BasetenBaseURL, cfg.BasetenModel, cfg.BasetenAPIKey, cfg.ProviderTimeout)
 	svc := &proposal.Service{Provider: provider}
+	analyzeSvc := &analyze.Service{Provider: provider}
+	layoutSvc := &layout.Service{Provider: provider}
 	handler := httpapi.NewRouter(&httpapi.Server{
 		ProposalService: svc,
+		AnalyzeService:  analyzeSvc,
+		LayoutService:   layoutSvc,
 		APIToken:        cfg.APIToken,
 		Version:         "0.1.0",
 	})

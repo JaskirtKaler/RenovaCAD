@@ -78,3 +78,52 @@ type ErrorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
+
+type AnalyzePhotoRequest struct {
+	Image AnalyzeImage `json:"image"`
+}
+
+type AnalyzeImage struct {
+	Name     string `json:"name"`
+	MimeType string `json:"mimeType"`
+	DataURL  string `json:"dataUrl"`
+}
+
+type AnalyzePhotoResponse struct {
+	Kind              string   `json:"kind"` // "analysis"
+	Description       string   `json:"description"`
+	FollowUpQuestions []string `json:"followUpQuestions"`
+}
+
+// Photo-to-layout draft (versioned contract)
+const LayoutDraftVersion = 1
+const MaxLayoutObjects = 8
+const MaxLayoutResponseBytes = 64 * 1024
+
+type LayoutDraftRequest struct {
+	Image AnalyzeImage `json:"image"`
+}
+
+type LayoutObjectDraft struct {
+	Kind            ObjectKind   `json:"kind"`
+	Name            string       `json:"name"`
+	DimensionsMm    DimensionsMm `json:"dimensionsMm"`
+	PositionMm      PositionMm   `json:"positionMm"`
+	RotationDegrees float64      `json:"rotationDegrees"`
+}
+
+type LayoutDraft struct {
+	Version           int                 `json:"version"`
+	Objects           []LayoutObjectDraft `json:"objects"`
+	Description       string              `json:"description"`
+	FollowUpQuestions []string            `json:"followUpQuestions"`
+	Warnings          []string            `json:"warnings,omitempty"`
+	IsApproximate     bool                `json:"isApproximate"`
+}
+
+type LayoutDraftResponse struct {
+	Kind              string       `json:"kind"` // "layout_draft" | "needs_info"
+	Draft             *LayoutDraft `json:"draft,omitempty"`
+	Message           string       `json:"message,omitempty"`
+	FollowUpQuestions []string     `json:"followUpQuestions,omitempty"`
+}

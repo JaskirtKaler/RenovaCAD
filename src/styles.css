@@ -299,10 +299,20 @@ kbd { padding: 2px 4px; font-size: 10px; border: 1px solid #43604c; border-radiu
 .empty-state h2 { font-size: 36px; font-weight: 400; letter-spacing: -1.1px; line-height: 1.2; margin: 0; color: #ccdfcf; }
 .empty-state p { color: #7f9b87; font-size: 12px; line-height: 1.9; margin: 20px 0 28px; }
 .empty-footnote { color: #597a63; font-size: 8px; margin-top: 16px; }
-.photo-view { height: 100%; }
-.photo-view.with-image { padding: 35px 30px 70px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.photo-view > img { width: 100%; height: 100%; max-height: calc(100% - 40px); object-fit: contain; border-radius: 7px; }
-.photo-filename { color: #89a592; display: flex; align-items: center; gap: 7px; font-size: 10px; margin-top: 17px; }
+.photo-view { height: 100%; overflow: auto; }
+.photo-view.with-image { padding: 24px 24px 32px; display: flex; flex-direction: column; align-items: center; gap: 12px; overflow: auto; }
+.photo-view.with-image > img { width: 100%; max-height: 420px; object-fit: contain; border-radius: 7px; flex-shrink: 0; }
+.photo-filename { color: #89a592; display: flex; align-items: center; gap: 7px; font-size: 10px; }
+.photo-analysis { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 12px; margin-top: 8px; }
+.photo-analysis-consent { display: flex; gap: 8px; align-items: flex-start; font-size: 10px; line-height: 1.6; color: #8ea595; background: #191f1a; border: 1px solid #2d352e; border-radius: 7px; padding: 10px 11px; }
+.photo-analysis-consent > svg { flex-shrink: 0; margin-top: 1px; color: #7fdaa7; }
+.photo-analyze-button { align-self: flex-start; }
+.photo-analysis-result { background: #1a2720; border: 1px solid #3a5944; border-radius: 8px; padding: 14px 15px; display: flex; flex-direction: column; gap: 10px; }
+.analysis-label, .analysis-followup-label { font-size: 8px; letter-spacing: .9px; color: #8fb79b; font-weight: 600; }
+.analysis-description { margin: 0; font-size: 12px; line-height: 1.7; color: #cdd9ce; white-space: pre-wrap; }
+.analysis-questions { margin: 0; padding-left: 16px; font-size: 11px; line-height: 1.7; color: #9ab3a2; }
+.analysis-footnote { margin: 0; font-size: 9px; line-height: 1.6; color: #7a9a87; border-top: 1px solid #2d3e33; padding-top: 8px; }
+.photo-analysis-note { margin: 0; font-size: 9px; line-height: 1.6; color: #738d7c; }
 .coming-soon { display: inline-flex; gap: 7px; align-items: center; color: #8fb79b; border: 1px solid #3e6147; padding: 8px 11px; font-size: 8px; letter-spacing: 1px; border-radius: 20px; }
 .render-state .text-button { margin-top: 27px; }
 
@@ -379,6 +389,16 @@ kbd { padding: 2px 4px; font-size: 10px; border: 1px solid #43604c; border-radiu
 .ai-error { border:1px solid #6a4a42; background:#2a211e; color:#d6b6b0; }
 .ai-clarification p, .ai-error p { margin:0; flex:1; }
 .ai-clarification .secondary-button, .ai-error .secondary-button { font-size:9px; padding:6px 8px; flex-shrink:0; }
+.axis-indicator { position: absolute; left: 14px; bottom: 62px; z-index: 2; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.axis-indicator svg { filter: drop-shadow(0 1px 3px #0008); }
+.measure-hud { position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%); z-index: 3; background: #141d1b; border: 1px solid #2f4a3a; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; min-width: 280px; max-width: 90%; box-shadow: 0 6px 20px #0005; }
+.measure-instructions { font-size: 11px; color: #c8ded0; font-weight: 500; }
+.measure-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.measure-surface { font-size: 8px; color: #7fa08d; margin-left: auto; }
+.measure-note { font-size: 7px; color: #5f7a6a; letter-spacing: .3px; }
+.measure-hud .secondary-button { padding: 6px 8px; font-size: 9px; }
+.move-warning { position: absolute; left: 50%; bottom: 62px; transform: translateX(-50%); z-index: 3; background: #2a1f1a; border: 1px solid #6a4a2d; color: #e6c9a0; font-size: 10px; padding: 7px 10px; border-radius: 6px; box-shadow: 0 6px 20px #0005; }
+.kitchen-preview[data-tool="measure"] { cursor: crosshair; }
 .proposal-card.stale { border-color:#6a5850; opacity:.9; }
 .stale-note { color:#c09f92; }
 .composer-loading { color:#93c8a2; }

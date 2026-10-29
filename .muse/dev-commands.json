@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "commands": [
+    ["bun", "run", "dev"],
+    ["bun", "run", "dev:web"],
+    ["bun", "run", "preview"],
+    ["bun", "run", "build"],
+    ["bun", "run", "typecheck"],
+    ["bun", "run", "muse:test"],
+    ["bun", "run", "muse:check"],
+    ["bun", "test"],
+    ["bun", "install", "--frozen-lockfile"],
+    ["go", "run", "./cmd/server"],
+    ["go", "test", "./..."],
+    ["git", "status"],
+    ["git", "diff"],
+    ["git", "log"],
+    ["git", "show"]
+  ]
+}

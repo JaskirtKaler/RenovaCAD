@@ -10,14 +10,19 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
+	"renovacad/services/api/internal/analyze"
+	"renovacad/services/api/internal/layout"
 	"renovacad/services/api/internal/model"
 	"renovacad/services/api/internal/proposal"
 )
 
 const maxRequestBytes = 256 * 1024
+const maxAnalyzeBytes = 8 * 1024 * 1024
 
 type Server struct {
 	ProposalService *proposal.Service
+	AnalyzeService  *analyze.Service
+	LayoutService   *layout.Service
 	APIToken        string
 	Version         string
 }
@@ -40,6 +45,10 @@ func NewRouter(s *Server) http.Handler {
 		r.Post("/ai/propose-edit", s.handlePropose)
 		// Versioned alias for future.
 		r.Post("/v1/ai/propose-edit", s.handlePropose)
+		r.Post("/ai/analyze-photo", s.handleAnalyzePhoto)
+		r.Post("/v1/ai/analyze-photo", s.handleAnalyzePhoto)
+		r.Post("/ai/propose-layout", s.handleProposeLayout)
+		r.Post("/v1/ai/propose-layout", s.handleProposeLayout)
 	})
 	// Backward alias without /api prefix for tooling minimalism? Not needed.
 	return r
@@ -77,6 +86,66 @@ func (s *Server) handlePropose(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp, svcErr := s.ProposalService.Propose(ctx, req)
+	if svcErr != nil {
+		writeError(w, svcErr.HTTPStatus, svcErr.Code, svcErr.Message)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleAnalyzePhoto(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAnalyzeBytes)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if s.AnalyzeService == nil {
+		writeError(w, 503, "service_unavailable", "photo analysis is not configured")
+		return
+	}
+	var req model.AnalyzePhotoRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, 400, "invalid_request", errorMessageForDecode(err))
+		return
+	}
+	if dec.More() {
+		writeError(w, 400, "invalid_request", "request body must contain a single JSON object")
+		return
+	}
+	resp, svcErr := s.AnalyzeService.Analyze(ctx, req)
+	if svcErr != nil {
+		writeError(w, svcErr.HTTPStatus, svcErr.Code, svcErr.Message)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleProposeLayout(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAnalyzeBytes)
+	ctx, cancel := context.WithTimeout(r.Context(), 22*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if s.LayoutService == nil {
+		writeError(w, 503, "service_unavailable", "layout proposal is not configured")
+		return
+	}
+	var req model.LayoutDraftRequest
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, 400, "invalid_request", errorMessageForDecode(err))
+		return
+	}
+	if dec.More() {
+		writeError(w, 400, "invalid_request", "request body must contain a single JSON object")
+		return
+	}
+	resp, svcErr := s.LayoutService.ProposeDraft(ctx, req)
 	if svcErr != nil {
 		writeError(w, svcErr.HTTPStatus, svcErr.Code, svcErr.Message)
 		return

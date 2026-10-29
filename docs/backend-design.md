@@ -141,15 +141,86 @@ Env vars (non-secret defaults documented in `services/api/.env.example`):
 
 Secrets never logged, never committed, never sent to renderer. `health` never echoes config. `propose-edit` errors strip provider bodies (`truncate` + `provider_error` without raw body).
 
+### POST /api/ai/analyze-photo
+Headers: `Content-Type: application/json` + same token as propose-edit. Body ≤ 8 MiB.
+
+Request JSON:
+```json
+{
+  "image": {"name":"kitchen.png","mimeType":"image/png","dataUrl":"data:image/png;base64,..."}
+}
+```
+Validation: mime must be `image/jpeg|png|webp`, name 1–200 chars, dataUrl must be `data:<mime>;base64,...` with valid base64, decoded ≤5 MB, total ≤7.1 MB base64. Only the photo is sent — no scene or credentials.
+
+Success 200:
+```json
+{
+  "kind":"analysis",
+  "description":"Visible: base cabinets, light countertop, window above sink...",
+  "followUpQuestions":["What are the wall-to-wall dimensions?","Ceiling height?","Appliances to keep?"]
+}
+```
+Description is concise, does not claim accurate dimensions, does not propose scene changes. Follow-up questions (2–4) ask about missing dimensions. Timeouts and provider errors map to 504/502 as for propose-edit. No auto-retry. In browser preview, bridge absent → honest “not available” error; when Go is up but Baseten key missing/invalid → provider_error without leaking key. Local editing/saving remain usable.
+
+### POST /api/ai/propose-layout (photo-to-layout draft — this milestone)
+Reuses `BASETEN_BASE_URL`/`BASETEN_MODEL` (`meta-models/muse-spark-open`) and the same vision `image_url` data-URL mechanism as analyze-photo. Verified via current Baseten docs & OpenAI-compatible chat completions spec: model supports vision `image_url` parts with `data:` URLs, `response_format: {"type":"json_object"}`, and `max_tokens` budgeting. No separate client duplication — same `baseten.Client` with new `ProposeLayout` method shares timeout/auth logic. Strict server validation is kept even if structured output is supported.
+
+Headers: `Content-Type: application/json` + token. Body ≤ 8 MiB.
+
+Request JSON (same image envelope as analyze-photo for reuse):
+```json
+{
+  "image": {"name":"kitchen.png","mimeType":"image/png","dataUrl":"data:image/png;base64,..."}
+}
+```
+No scene sent; draft is a proposal, not a mutation.
+
+Success 200 — layout draft (versioned, only workspace-representable fields):
+```json
+{
+  "kind": "layout_draft",
+  "draft": {
+    "version": 1,
+    "objects": [
+      {"kind":"base-cabinet","name":"Base cabinet 1","dimensionsMm":{"width":914.4,"height":876.3,"depth":609.6},"positionMm":{"x":-650,"y":0,"z":-300},"rotationDegrees":0},
+      {"kind":"wall-cabinet","name":"Wall cabinet 1","dimensionsMm":{"width":914.4,"height":762,"depth":304.8},"positionMm":{"x":-650,"y":1480,"z":-300},"rotationDegrees":0},
+      {"kind":"sink","name":"Sink","dimensionsMm":{"width":762,"height":228.6,"depth":508},"positionMm":{"x":400,"y":0,"z":-300},"rotationDegrees":0}
+    ],
+    "description": "Detected base cabinets along back wall, upper cabinet and sink. Positions are approximate.",
+    "followUpQuestions": ["What is wall length?","Confirm sink position?"],
+    "warnings": ["Approximate dimensions — please verify and measure before building."],
+    "isApproximate": true
+  }
+}
+```
+Limits enforced server-side (and re-checked client-side before apply): `version` must be 1, `objects` 1–8 items, each `kind` in `base-cabinet|wall-cabinet|tall-cabinet|wall|sink`, `name` 1–100 chars, dimensions 25.4–10000 mm, positions ±10000, rotation ±360, all rounded to 0.001 mm. Only these fields are in the contract; no per-vertex, material, or rendering extensions. Response body ≤ 64 KiB, `objects` count capped, description ≤4000 chars, questions/warnings bounded. Invalid/missing fields → 502 `invalid_provider_response`.
+
+Success 200 — needs_info (insufficient image):
+```json
+{
+  "kind": "needs_info",
+  "message": "Photo too blurry to detect kitchen layout.",
+  "followUpQuestions": ["Provide a clearer photo","What wall are we designing?"]
+}
+```
+Returned when image is not a kitchen, blurry, empty, or lacks recognizable layout — no confident objects invented.
+
+Error envelope same as propose-edit: `invalid_request` 400, `invalid_provider_response` 502, `provider_timeout` 504, `provider_error` 502.
+
+Validation (trust boundary): same image checks as analyze-photo plus layout version/count/kind/dimension/position checks above. Provider response validated even under `json_object` mode; malformed extra fields rejected via `DisallowUnknownFields` on request and strict checks on response.
+
+Draft remains a proposal: handler never mutates scene; UI must explicitly apply via `workspaceReducer` `apply-layout`.
+
 ## Verification plan (this milestone)
-- Fake provider + `httptest` covers: valid relative resize (6 in wider → 1066.8 mm), ambiguous input → clarification, wrong objectId, invalid dimensions, malformed provider JSON, provider 500, timeout, auth, health, size limits. `bun test` covers: valid AI proposal shown/applied via fake bridge, undo/redo after apply, cancel, stale after edit, clarification, provider errors, browser-bridge unavailable, stale-late ignored, secret non-exposure (`src/ai.test.tsx` 8 tests) plus `workspaceReducer` `ai-proposal` stale/before checks.
+- Fake provider + `httptest` covers: valid relative resize (6 in wider → 1066.8 mm), ambiguous input → clarification, wrong objectId, invalid dimensions, malformed provider JSON, provider 500, timeout, auth, health, size limits + photo analysis valid, invalid mime, too large, provider timeout/error. `bun test` covers: valid AI proposal shown/applied via fake bridge, undo/redo after apply, cancel, stale after edit, clarification, provider errors, browser-bridge unavailable, stale-late ignored, secret non-exposure (`src/ai.test.tsx` 8 tests) plus `workspaceReducer` `ai-proposal` stale/before checks + milestone photo-analysis consent/validation/provider failure/unavailable, axis arrow directions and short-axis handling, project controls single Save and Not yet saved (`src/milestone.test.tsx` 7 tests). Total 133 bun tests, all pass.
 - `bun run build` + `tsc --noEmit` gate.
-- Live Baseten call is opt-in, one request authorized for this milestone. With `BASETEN_API_KEY=b10_gXMffhfk.9q98G…` from `.env.example`, Baseten returned `{"error":"please check the api-key you provided"}` — placeholder is invalid; retry requires the real hackathon key in `services/api/.env`. No repeated billing; provider errors surface as `provider_error` without leaking the key.
+- Live Baseten call is opt-in, one request authorized for this milestone. With `BASETEN_API_KEY=b10_gXMffhfk.9q98G…` from `.env`, Baseten returned `{"error":"please check the api-key you provided"}` — placeholder is invalid; retry requires the real hackathon key in `services/api/.env`. No repeated billing; provider errors surface as `provider_error` without leaking the key. Photo analysis live verification also blocked by same invalid key — fake provider verifies the safe local boundary.
 
 ## What shipped (this milestone)
 - `internal/config/loadDotEnvIfPresent` so `services/api/.env` works without manual `export` (Go never auto-reads `.env`).
-- `electron/preload.ts` + `electron/main.ts` per-launch token, ephemeral loopback, health poll, `ipcMain.handle('ai:propose-edit')` narrow forward, clean shutdown, `electron.vite.config.ts` preload build.
-- `src/workspace.ts` `ai-proposal` action + `src/App.tsx` loading, proposal (unit-aware), stale detection (`revision` + `beforeMm`), Apply/Cancel, clarification, provider/service errors, late-response ignore, browser-only honest fallback, `src/vite-env.d.ts` bridge type, `src/styles.css` AI states.
+- `electron/preload.ts` + `electron/main.ts` per-launch token, ephemeral loopback, health poll, `ipcMain.handle('ai:propose-edit')` + `ai:analyze-photo` narrow forward (image validation, 8 MiB limit, 22s timeout), clean shutdown, `electron.vite.config.ts` preload build; `getStatus` distinguishes bridge vs provider (LIVE vs LOCAL badge).
+- `src/workspace.ts` `ai-proposal` action + `src/App.tsx` loading, proposal (unit-aware), stale detection (`revision` + `beforeMm`), Apply/Cancel, clarification, provider/service errors, late-response ignore, browser-only honest fallback, `src/vite-env.d.ts` bridge type, `src/styles.css` AI states + photo analysis consent, validation, explicit Analyze button, loading/error/result states (description labeled “not measured”, follow-up questions, footnote about no auto scene change).
+- `internal/baseten/client.go` extended with `AnalyzePhoto` (vision `image_url` data URL, 600 max tokens, json_object) + Fake with `AnalyzePhoto`; `internal/analyze/service.go` + `internal/httpapi/router.go` `POST /api/ai/analyze-photo` (8 MiB, 20s handler timeout) + `services/api/cmd/server` wiring.
 
 ## Open limitations
 - Only `width` on cabinets; `height`/`depth` and other objects deferred.

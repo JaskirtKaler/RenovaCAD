@@ -139,6 +139,151 @@ export function boundsOf(points: Point3[]): Bounds3 {
   return { min: { x: Math.min(...points.map((p) => p.x)), y: Math.min(...points.map((p) => p.y)), z: Math.min(...points.map((p) => p.z)) }, max: { x: Math.max(...points.map((p) => p.x)), y: Math.max(...points.map((p) => p.y)), z: Math.max(...points.map((p) => p.z)) } }
 }
 
+export function axisScreenVectors(camera: Camera): { x: { x: number; y: number }; y: { x: number; y: number }; z: { x: number; y: number } } {
+  // Use viewport projection conventions as source of truth: derive screen vectors from the same raw projection used by createProjector.
+  // Matches the orientation widget to the actual viewport projection for both perspective and orthographic modes.
+  const cosYaw = Math.cos(camera.yaw), sinYaw = Math.sin(camera.yaw)
+  const sinPitch = Math.sin(camera.pitch), cosPitch = Math.cos(camera.pitch)
+  const toScreen = (v: Point3) => {
+    const x = v.x * cosYaw - v.z * sinYaw
+    const y = v.x * sinYaw * sinPitch - v.y * cosPitch + v.z * cosYaw * sinPitch
+    return { x, y }
+  }
+  return { x: toScreen({ x: 1, y: 0, z: 0 }), y: toScreen({ x: 0, y: 1, z: 0 }), z: toScreen({ x: 0, y: 0, z: 1 }) }
+}
+
+export function movementPlaneIsUsable(camera: Camera): boolean {
+  const dir = cameraDirection(camera)
+  // plane normal is Y up (0,1,0). If camera looks nearly edge-on, |dot| small.
+  return Math.abs(dir.y) > 0.12
+}
+
+export function worldDeltaFromScreenDelta(
+  screenDx: number,
+  screenDy: number,
+  camera: Camera,
+  frame: Point3[],
+  zoom: number,
+  planeY: number,
+): { dx: number; dz: number } | null {
+  // Build screen basis for 1mm X and Z moves at planeY.
+  const proj = createProjector(frame, camera, zoom)
+  const p0 = proj.project({ x: 0, y: planeY, z: 0 })
+  const px = proj.project({ x: 1, y: planeY, z: 0 })
+  const pz = proj.project({ x: 0, y: planeY, z: 1 })
+  const bx = { x: px.x - p0.x, y: px.y - p0.y }
+  const bz = { x: pz.x - p0.x, y: pz.y - p0.y }
+  const det = bx.x * bz.y - bx.y * bz.x
+  if (Math.abs(det) < 0.05) return null
+  const invDet = 1 / det
+  const dx = (screenDx * bz.y - screenDy * bz.x) * invDet
+  const dz = (bx.x * screenDy - bx.y * screenDx) * invDet
+  return { dx, dz }
+}
+
+export function worldPointOnPlane(
+  screenX: number,
+  screenY: number,
+  planeY: number,
+  camera: Camera,
+  frame: Point3[],
+  zoom: number,
+  svgRect: DOMRect,
+): Point3 | null {
+  // Convert client/screen to SVG viewBox (0..1000,0..800)
+  const viewX = ((screenX - svgRect.left) / Math.max(1, svgRect.width)) * 1000
+  const viewY = ((screenY - svgRect.top) / Math.max(1, svgRect.height)) * 800
+  const proj = createProjector(frame, camera, zoom)
+  const p0 = proj.project({ x: 0, y: planeY, z: 0 })
+  const px = proj.project({ x: 1, y: planeY, z: 0 })
+  const pz = proj.project({ x: 0, y: planeY, z: 1 })
+  const bx = { x: px.x - p0.x, y: px.y - p0.y }
+  const bz = { x: pz.x - p0.x, y: pz.y - p0.y }
+  const det = bx.x * bz.y - bx.y * bz.x
+  if (Math.abs(det) < 0.05) return null
+  const invDet = 1 / det
+  const dx = viewX - p0.x
+  const dy = viewY - p0.y
+  const worldX = (dx * bz.y - dy * bz.x) * invDet
+  const worldZ = (bx.x * dy - bx.y * dx) * invDet
+  return { x: worldX, y: planeY, z: worldZ }
+}
+
+export function snapDelta(
+  movingBox: { positionMm: Point3; dimensionsMm: { width: number; depth: number }; rotationDegrees: number },
+  otherBoxes: { positionMm: Point3; dimensionsMm: { width: number; depth: number }; rotationDegrees: number }[],
+  tentative: Point3,
+  toleranceMm = 40,
+): { snapped: Point3; didSnap: boolean; guides: { x?: number; z?: number }[] } {
+  // Only support axis-aligned (rotation 0) for both moving and others; otherwise no snap.
+  if (Math.abs(movingBox.rotationDegrees) > 0.5) return { snapped: tentative, didSnap: false, guides: [] }
+  const moving = { x: tentative.x, z: tentative.z, w: movingBox.dimensionsMm.width, d: movingBox.dimensionsMm.depth }
+  let bestDx = 0, bestDz = 0, didSnap = false
+  let bestXAbs = Infinity, bestZAbs = Infinity
+  const guides: { x?: number; z?: number }[] = []
+  for (const other of otherBoxes) {
+    if (Math.abs(other.rotationDegrees) > 0.5) continue
+    const o = { x: other.positionMm.x, z: other.positionMm.z, w: other.dimensionsMm.width, d: other.dimensionsMm.depth }
+    // candidate snap values for X: moving left to other right (gap 0), moving right to other left, moving left to other left, moving right to other right, center to center
+    const candidatesX = [
+      o.x + o.w - moving.x, // left to right
+      o.x - moving.w - moving.x, // right to left
+      o.x - moving.x, // left to left
+      o.x + o.w - moving.w - moving.x, // right to right
+      o.x + o.w / 2 - moving.w / 2 - moving.x, // center
+    ]
+    for (const c of candidatesX) {
+      if (Math.abs(c) <= toleranceMm && Math.abs(c) < bestXAbs - 1e-6) {
+        // Check Z overlap with small margin for edge snap relevance
+        const movingZ0 = moving.z, movingZ1 = moving.z + moving.d
+        const oZ0 = o.z, oZ1 = o.z + o.d
+        const overlap = Math.min(movingZ1, oZ1) - Math.max(movingZ0, oZ0)
+        if (overlap > -50) {
+          bestDx = c
+          bestXAbs = Math.abs(c)
+          didSnap = true
+        }
+      }
+    }
+    const candidatesZ = [
+      o.z + o.d - moving.z,
+      o.z - moving.d - moving.z,
+      o.z - moving.z,
+      o.z + o.d - moving.d - moving.z,
+      o.z + o.d / 2 - moving.d / 2 - moving.z,
+    ]
+    for (const c of candidatesZ) {
+      if (Math.abs(c) <= toleranceMm && Math.abs(c) < bestZAbs - 1e-6) {
+        const movingX0 = moving.x, movingX1 = moving.x + moving.w
+        const oX0 = o.x, oX1 = o.x + o.w
+        const overlap = Math.min(movingX1, oX1) - Math.max(movingX0, oX0)
+        if (overlap > -50) {
+          bestDz = c
+          bestZAbs = Math.abs(c)
+          didSnap = true
+        }
+      }
+    }
+  }
+  // Choose closest overall? Currently we combine both axes independently if within tolerance
+  const snapped = { ...tentative }
+  if (Math.abs(bestDx) <= toleranceMm && bestXAbs !== Infinity) {
+    snapped.x += bestDx
+    guides.push({ x: snapped.x })
+    guides.push({ x: snapped.x + moving.w })
+  }
+  if (Math.abs(bestDz) <= toleranceMm && bestZAbs !== Infinity) {
+    snapped.z += bestDz
+    guides.push({ z: snapped.z })
+    guides.push({ z: snapped.z + moving.d })
+  }
+  return { snapped, didSnap: didSnap && (bestXAbs !== Infinity || bestZAbs !== Infinity), guides }
+}
+
+export function distanceMm(a: Point3, b: Point3): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
 export function createProjector(points: Point3[], camera: Camera, zoom: number) {
   const bounds = boundsOf(points)
   const center = { x: (bounds.min.x + bounds.max.x) / 2, y: (bounds.min.y + bounds.max.y) / 2, z: (bounds.min.z + bounds.max.z) / 2 }

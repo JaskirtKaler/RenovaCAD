@@ -83,14 +83,30 @@ Run the local editing, camera, and component interaction checks with `bun test`.
 - Use **Fit preview** to fit the current objects and reset zoom while keeping the angle. Use **Home view** to also restore the initial perspective. Moving, rotating, or resizing an object keeps the camera frame stationary until you fit it again.
 - Hide either side panel or use **Focus viewport** to give the kitchen the full workspace width. Exit focus mode with its button or Escape.
 - Keyboard shortcuts: `V` select, `M` move, `R` measure, `O` objects, `A` annotate, `⌘Z` undo, `⇧⌘Z` redo, and Delete/Backspace to delete a selected object. On non-Mac platforms, Ctrl replaces ⌘ for undo and redo.
+- Lower-left **axis indicator** — three arrows (X red, Y green, Z blue) with labels at the tips, derived from the same camera projection as the viewport. Arrows update as you orbit; when an axis points toward/away from you its projection is short and is shown as a dot (filled if toward you, ring if away). Works in perspective and orthographic views (X width right, Y height up, Z depth forward). The view cube remains a separate camera-navigation control.
+- **Kitchen photo analysis (new):** Import a JPG/PNG/WEBP photo, then explicitly click **Analyze photo**. A consent notice explains the photo will be sent to Baseten (Muse Spark) — only the photo is sent, only when you click Analyze (not on import). Image type/size are validated (≤5 MB), errors/timeouts are shown, and the response is a concise, labeled description of visible kitchen features plus 2–4 follow-up questions about missing dimensions. It does **not** claim accurate measurements and does **not** automatically change the 3D scene. If the provider is unavailable, local editing and project saving remain usable; analyze shows an honest error. In browser preview the bridge is absent and analysis shows “not available in browser preview”.
+- In **Move** (`M`), click to select then drag the selected cabinet or sink in the X/Z plane at its current height to place it beside another object. Edges snap when aligned (within ~40 mm); hold **Shift** to bypass, drag empty space to orbit. Y is unchanged — use inspector or PageUp/PageDown for height. Edge-on views disable drag with a prompt to switch views. One drag = one undo.
+- In **Measure** (`R`), crosshair shows; click floor or object tops for points, see world-space distance in your units. **Back one point** removes last, **Clear** or **Esc** removes all. Measurement is a temporary viewport annotation — not saved with the project. **Annotate** remains coming next.
 
-The kitchen uses a local 3D model of rectangular objects projected into SVG. Dimensions, positions, and rotation affect the geometry. New objects receive a stored position and trigger a fit once. Deleting another object never rearranges survivors. The floor grid has fixed 12-inch tiles across the work area, with stronger major lines. Move mode adds a faint vertical guide and height reference. The viewport grid toggle controls both grid planes. This preview does not include a CAD engine or collision enforcement. Measure and annotation tools explain that their editor behavior comes next.
+The kitchen uses a local 3D model of rectangular objects projected into SVG. Dimensions, positions, and rotation affect the geometry. New objects receive a stored position and trigger a fit once. Deleting another object never rearranges survivors. The floor grid has fixed 12-inch tiles across the work area, with stronger major lines. Move mode adds a faint vertical guide and height reference plus drag snapping guides. The viewport grid toggle controls both grid planes. This preview does not include a CAD engine or full collision enforcement; snapping for rotated objects is currently unsupported and shown honestly. The axis indicator and measurement overlay avoid obscuring controls and selected objects.
 
-Object creation lives in the toolbar's **Objects** catalog. Camera orientation lives in the view cube. Zoom percentage is a readout, and the viewport has the single grid toggle.
+Object creation lives in the toolbar's **Objects** catalog. Camera orientation lives in the view cube and the lower-left axis indicator. Zoom percentage is a readout, and the viewport has the single grid toggle. The header keeps **one** primary **Save** button; **Save As** is available with a clear label in **Workspace settings** (and via Save when there is no current file) — no duplicate save icons in the header.
 
-The AI service has **no connected project storage and no photorealistic rendering** — those remain future milestones. The `POST /api/ai/propose-edit` endpoint only supports absolute cabinet width resize; `height`/`depth` and other objects are rejected. The Save control explains that saving is a later milestone. Scene edits, settings, and imported photos stay in memory and reset when the app reloads. Uploaded photos are viewed locally and are not sent anywhere. AI Render has a placeholder for the future integration. When `BASETEN_API_KEY` is missing or the service is unreachable, the assistant reports the error honestly.
+Projects are saved as a single portable `.renovacad` file (JSON) with embedded reference photo — no folder or database. See [Project format](#project-format) below. Uploaded photos are viewed locally and saved with the project; they are only sent to Baseten when you explicitly click **Analyze photo** in the Photo view. AI Render has a placeholder for the future integration. When `BASETEN_API_KEY` is missing or the service is unreachable, the assistant and photo analysis report the error honestly — the badge shows **LOCAL** (not **LIVE**) until a provider call succeeds, and local editing and project saving remain usable.
 
-Limitations in this milestone: only `width` on `base-cabinet` / `wall-cabinet` / `tall-cabinet`; Baseten `response_format: json_object` is treated as a hint — server-side validation rejects malformed model output; live Baseten calls are opt-in and sandboxed `Go` tests use a fake provider (run `GOCACHE=/tmp/go-cache GOMODCACHE=/tmp/go-mod go test ./...` from `services/api` if the default cache is sandboxed).
+Limitations in this milestone: only `width` on `base-cabinet` / `wall-cabinet` / `tall-cabinet`; Baseten `response_format: json_object` is treated as a hint — server-side validation rejects malformed model output; live Baseten calls are opt-in and sandboxed Go tests use a fake provider (run `GOCACHE=/tmp/go-cache GOMODCACHE=/tmp/go-mod go test ./...` from `services/api` if the default cache is sandboxed). Photorealistic rendering remains a future milestone.
+
+### Project format
+
+RenovaCAD saves a single portable project file (`.renovacad`) — a versioned JSON document suitable for the current demo image sizes and easy to email or move. A project folder was considered but would add file-system complexity and broken-reference risks for one embedded image; a single file keeps the demo reliable and matches the “save to a location you choose” flow. If image sizes grow past a few megabytes, a folder with sidecar assets could be revisited.
+
+**What is saved:** project format version and project name, all scene objects (IDs, kinds, dimensions in millimeters, positions, rotations), selected object, user settings (units, grid visibility), camera state (yaw/pitch/projection/zoom), view mode, and the reference photo as an embedded `data:` URL with its original filename and MIME type — no temporary `blob:` URL dependency, so reopening works without the original file.
+
+**What is not saved:** API keys, service tokens, pending AI proposals, transient errors, in-flight requests, or undo/redo history. Selection is restored if the object still exists, otherwise the first object is selected. Undo history is reset on open (a new edit branch starts from the opened state) and pending proposals are cleared — reopening never allows an old proposal to be applied to the new scene. An approved AI resize persists as a normal scene edit.
+
+**Validation and limits:** opening validates version, JSON shape, required fields, numeric ranges (dimensions 25.4–10000 mm, positions ±10000, rotation ±360°, zoom 0.5–2, pitch ±π), and photo MIME/size. Unsupported versions, malformed files, invalid values, or missing/invalid assets are rejected with a message and the current scene is left intact. Practical limits: project file ≤ 12 MB, reference photo ≤ 5 MB decoded (≈ 6.7 MB base64), ≤ 50 objects. Electron saves atomically via temp-file + rename so a partially written file never replaces the last good project (on failure the previous file is preserved; atomic rename is best-effort on non-POSIX filesystems).
+
+**Saving in Electron vs. browser:** In Electron (`bun run dev`), New / Open / Save / Save As use native dialogs through a narrow preload bridge (`window.renovacadProject`) and the main process does all file I/O — the renderer has no arbitrary filesystem access. Canceling a dialog leaves the current project intact. If there are unsaved changes, creating a new project, opening another file, or quitting warns via a native Save/Discard/Cancel dialog and respects the choice. Save status is shown in the header and footer (Saved / Unsaved / Saving / Error with actionable text). In browser-only `bun run dev:web`, the bridge is absent; Save/Open show an honest “not available in browser preview — run in Electron” message and the workspace remains in memory only.
 
 ## Python
 
@@ -110,16 +126,18 @@ The application assistant remains a disconnected UI prototype. No API credential
 ## Structure
 
 ```text
-electron/main.ts                 Window, Go lifecycle, per-launch token, IPC bridge
-electron/preload.ts              Narrow contextBridge (window.renovacadApi)
-src/App.tsx                     Workspace + AI assistant (loading, proposal, stale, clarification, errors)
-src/workspace.ts                Scene model, proposals, undo/redo (includes ai-proposal)
+electron/main.ts                 Window, Go lifecycle, per-launch token, IPC + project bridges, safe atomic save
+electron/preload.ts              Narrow contextBridge (window.renovacadApi + window.renovacadProject)
+src/App.tsx                     Workspace + AI assistant + project lifecycle (New/Open/Save/Save As, dirty, quit guard, photo dataUrl)
+src/workspace.ts                Scene model, proposals, undo/redo (includes ai-proposal + load)
+src/project.ts                  Project format, validation, limits, serialize/parse
 src/ai.test.tsx                 Focused AI flow tests (apply/undo/redo, stale, clarification, errors, bridge, stale-late, secret)
+src/project.test.ts             Project round-trip, validation, limits, no transient leakage
 src/viewport.ts                 Camera, projection, and box geometry
 src/components/KitchenPreview.tsx Interactive kitchen preview
 src/components/ViewCube.tsx     Camera preset controls
 src/styles.css                  Layout, components, and AI states
-docs/ui-architecture.md          State ownership and design decisions
+docs/ui-architecture.md          State ownership and design decisions (includes project ownership)
 docs/backend-design.md           Go service design + Electron wiring for this milestone
 services/api/                   Go Chi service (loopback + token + Baseten)
 ```

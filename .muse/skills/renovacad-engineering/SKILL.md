@@ -34,6 +34,16 @@ Parallelize independent reads. Serialize implementation in this checkout. If iso
 
 Use `bun` for JavaScript dependencies and scripts. Use `conda run -n musedev python ...` for Python. Obtain permission before package installation into the external Conda environment. Keep caches and temporary outputs in the project locations provided by the launcher.
 
+Use native `edit_file` and `write_file` for normal project edits. A paragraph replacement does not need a shell heredoc or Python helper. For a useful scripted transformation, create the script with `write_file` under `.agent-runtime/` and execute it through `conda run -n musedev python ...`.
+
+The named command approvals do not cover every shell construction or interpreter call. If an ordinary edit encounters shell approval, use the native file-editing tool instead of requesting a broad shell allowance. Follow the specific Go-cache authorization in `AGENTS.md`; it does not grant other system-wide access.
+
+Run ordinary Go checks with the inherited cache environment, without per-command `GOCACHE=...` or `GOMODCACHE=...` assignments. Run checks separately instead of combining them with shell groups or helper scripts merely to truncate output. Muse can hold an entire compound command when one stage cannot be classified.
+
+Apply the preauthorized local-development rules in `AGENTS.md`. Use the named commands in `.muse/dev-commands.json`; do not request permission again for those ordinary development steps. Restart only this session's project processes through native task controls and honor unsaved-work dialogs. A process with an uncertain owner, a broad process kill, or a destructive cleanup still needs permission.
+
+Use fake providers for tests. Ask before live paid requests or expanding spending beyond normal Muse work on the requested task. A local service restart and a health check do not authorize an inference call. Command allowances are not financial limits; these spending decisions remain an explicit engineering rule.
+
 Fix the first incorrect assumption or state transition. Avoid compatibility layers, unrelated cleanup, and speculative features. Add a focused behavioral test when a bug or boundary warrants one. Use existing checks for low-impact reversible edits.
 
 Run relevant checks and `bun run build` after application changes. For changes to the agent launcher, also run `bun run muse:test` and `bun run muse:check`. An empty API key is an expected readiness failure until the user supplies it. Configuration checks and stub tests do not prove live model behavior or OS write denial.

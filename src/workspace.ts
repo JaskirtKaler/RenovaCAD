@@ -71,6 +71,7 @@ type Action =
   | { kind: 'rotate'; degrees: number }
   | { kind: 'nudge'; axis: Axis; direction: -1 | 1 }
   | { kind: 'set-position'; axis: Axis; valueMm: number }
+  | { kind: 'move-to'; id: string; positionMm: PositionMm }
   | { kind: 'add'; objectKind: ObjectKind; id: string }
   | { kind: 'delete' }
   | { kind: 'sample-proposal' }
@@ -79,8 +80,10 @@ type Action =
   | { kind: 'cancel-proposal' }
   | { kind: 'undo' }
   | { kind: 'redo' }
+  | { kind: 'load'; scene: SceneObject[]; selectedId: string | null }
+  | { kind: 'apply-layout'; objects: SceneObject[] }
 
-const initialState: WorkspaceState = {
+export const initialState: WorkspaceState = {
   past: [],
   present: [createObject('base-cabinet', 'base-01', { x: -650, y: 0, z: -300 }), createObject('wall-cabinet', 'upper-01', { x: -650, y: 1480, z: -300 }), createObject('tall-cabinet', 'tall-01', { x: 650, y: 0, z: -300 })],
   future: [],
@@ -88,6 +91,8 @@ const initialState: WorkspaceState = {
   selectedId: 'base-01',
   proposal: { kind: 'resize', status: 'pending', objectId: 'base-01', objectName: 'Base cabinet', revision: 0, beforeMm: 914.4, afterMm: 1066.8 },
 }
+
+const initialStateRef = initialState
 
 function commit(state: WorkspaceState, next: Scene): WorkspaceState {
   return { ...state, past: [...state.past.slice(-49), state.present], present: next, future: [], revision: state.revision + 1, proposal: { kind: 'none' } }
@@ -121,6 +126,20 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
       const valueMm = Math.round(action.valueMm * 1000) / 1000
       if (Math.abs(selected.positionMm[action.axis] - valueMm) < 0.0005) return state
       return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, positionMm: { ...object.positionMm, [action.axis]: valueMm } } : object))
+    }
+    case 'move-to': {
+      const target = state.present.find((o) => o.id === action.id)
+      if (!target) return state
+      for (const axis of ['x', 'y', 'z'] as const) {
+        if (!Number.isFinite(action.positionMm[axis]) || Math.abs(action.positionMm[axis]) > POSITION_LIMIT_MM) return state
+      }
+      const nextPos = {
+        x: Math.round(action.positionMm.x * 1000) / 1000,
+        y: Math.round(action.positionMm.y * 1000) / 1000,
+        z: Math.round(action.positionMm.z * 1000) / 1000,
+      }
+      if (Math.abs(target.positionMm.x - nextPos.x) < 0.0005 && Math.abs(target.positionMm.y - nextPos.y) < 0.0005 && Math.abs(target.positionMm.z - nextPos.z) < 0.0005) return state
+      return commit(state, state.present.map((o) => o.id === action.id ? { ...o, positionMm: nextPos } : o))
     }
     case 'add': {
       const position = placementForNewObject(state.present, action.objectKind)
@@ -164,6 +183,47 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
       const next = state.future[0]
       if (!next) return state
       return { ...state, past: [...state.past, state.present], present: next, future: state.future.slice(1), selectedId: restoreSelection(state, next), revision: state.revision + 1, proposal: { kind: 'none' } }
+    }
+    case 'load': {
+      // Loading a project replaces scene, resets history, revision, and any pending proposal.
+      // Selection is restored if it exists in new scene, otherwise first object.
+      const scene = action.scene
+      const ids = new Set(scene.map(o => o.id))
+      const selectedId = action.selectedId && ids.has(action.selectedId) ? action.selectedId : scene[0]?.id ?? null
+      return { past: [], present: scene, future: [], revision: 0, selectedId, proposal: { kind: 'none' } }
+    }
+    case 'apply-layout': {
+      // Apply approved draft as one undoable commit that adds objects to current scene.
+      // Validate each object strictly; preserve existing scene on invalid input.
+      if (!Array.isArray(action.objects) || action.objects.length === 0 || action.objects.length > 50) return state
+      if (state.present.length + action.objects.length > 50) return state
+      const seen = new Set(state.present.map(o => o.id))
+      for (const o of action.objects) {
+        if (typeof o.id !== 'string' || o.id.length === 0 || o.id.length > 128) return state
+        if (seen.has(o.id)) return state
+        seen.add(o.id)
+        if (!['base-cabinet', 'wall-cabinet', 'tall-cabinet', 'wall', 'sink'].includes(o.kind)) return state
+        if (typeof o.name !== 'string' || o.name.length === 0 || o.name.length > 100) return state
+        if (!Number.isFinite(o.dimensionsMm.width) || o.dimensionsMm.width < 25.4 || o.dimensionsMm.width > 10000) return state
+        if (!Number.isFinite(o.dimensionsMm.height) || o.dimensionsMm.height < 25.4 || o.dimensionsMm.height > 10000) return state
+        if (!Number.isFinite(o.dimensionsMm.depth) || o.dimensionsMm.depth < 25.4 || o.dimensionsMm.depth > 10000) return state
+        if (!Number.isFinite(o.rotationDegrees) || Math.abs(o.rotationDegrees) > 360) return state
+        if (!Number.isFinite(o.positionMm.x) || Math.abs(o.positionMm.x) > 10000) return state
+        if (!Number.isFinite(o.positionMm.y) || Math.abs(o.positionMm.y) > 10000) return state
+        if (!Number.isFinite(o.positionMm.z) || Math.abs(o.positionMm.z) > 10000) return state
+        // Normalize to 0.001 mm
+        o.dimensionsMm.width = Math.round(o.dimensionsMm.width * 1000) / 1000
+        o.dimensionsMm.height = Math.round(o.dimensionsMm.height * 1000) / 1000
+        o.dimensionsMm.depth = Math.round(o.dimensionsMm.depth * 1000) / 1000
+        o.positionMm.x = Math.round(o.positionMm.x * 1000) / 1000
+        o.positionMm.y = Math.round(o.positionMm.y * 1000) / 1000
+        o.positionMm.z = Math.round(o.positionMm.z * 1000) / 1000
+        o.rotationDegrees = Math.round(o.rotationDegrees * 1000) / 1000
+      }
+      const next = [...state.present, ...action.objects]
+      const committed = commit(state, next)
+      // Select first newly added object
+      return { ...committed, selectedId: action.objects[0]?.id ?? committed.selectedId }
     }
     default: {
       const exhaustive: never = action
