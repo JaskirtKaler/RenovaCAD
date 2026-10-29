@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "name": "Demo Kitchen — Approximate Draft Example",
+  "scene": [
+    {
+      "id": "base-01",
+      "kind": "base-cabinet",
+      "name": "Base cabinet",
+      "dimensionsMm": { "width": 914.4, "height": 876.3, "depth": 609.6 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": -650, "y": 0, "z": -300 }
+    },
+    {
+      "id": "upper-01",
+      "kind": "wall-cabinet",
+      "name": "Wall cabinet",
+      "dimensionsMm": { "width": 914.4, "height": 762, "depth": 304.8 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": -650, "y": 1480, "z": -300 }
+    },
+    {
+      "id": "tall-01",
+      "kind": "tall-cabinet",
+      "name": "Tall cabinet",
+      "dimensionsMm": { "width": 457.2, "height": 2133.6, "depth": 609.6 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": 650, "y": 0, "z": -300 }
+    },
+    {
+      "id": "wall-01",
+      "kind": "wall",
+      "name": "Kitchen wall A",
+      "dimensionsMm": { "width": 3048, "height": 2438.4, "depth": 152.4 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": -1524, "y": 0, "z": -400 }
+    },
+    {
+      "id": "wall-02",
+      "kind": "wall",
+      "name": "Kitchen wall B",
+      "dimensionsMm": { "width": 3048, "height": 2438.4, "depth": 152.4 },
+      "rotationDegrees": 270,
+      "positionMm": { "x": 1524, "y": 0, "z": -400 }
+    },
+    {
+      "id": "demo-base-01",
+      "kind": "base-cabinet",
+      "name": "Demo Base (approx)",
+      "dimensionsMm": { "width": 914.4, "height": 876.3, "depth": 609.6 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": -650, "y": 0, "z": 900 },
+      "approximateFields": { "width": true, "height": true, "depth": true, "x": true, "y": true, "z": true, "rotation": true }
+    },
+    {
+      "id": "demo-wall-01",
+      "kind": "wall-cabinet",
+      "name": "Demo Wall (edited)",
+      "dimensionsMm": { "width": 1016, "height": 762, "depth": 304.8 },
+      "rotationDegrees": 0,
+      "positionMm": { "x": -650, "y": 1480, "z": 900 },
+      "approximateFields": { "width": false, "height": true, "depth": true, "x": true, "y": true, "z": true, "rotation": true }
+    }
+  ],
+  "selectedId": "demo-base-01",
+  "settings": { "unit": "in", "showGrid": true },
+  "camera": { "yaw": 0.7853981633974483, "pitch": 0.6154797086703874, "projection": "perspective", "zoom": 1 },
+  "viewMode": "cad",
+  "referencePhoto": {
+    "name": "demo-kitchen.png",
+    "mimeType": "image/png",
+    "dataUrl": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+  },
+  "roomMeasurements": {
+    "wallLengthMm": 3048,
+    "wallHeightMm": 2438.4,
+    "wallLengthProvenance": "user-entered",
+    "wallHeightProvenance": "user-entered",
+    "wallLengthConfirmed": true,
+    "wallHeightConfirmed": false
+  }
+}

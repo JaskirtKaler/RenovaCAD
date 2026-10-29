@@ -18,6 +18,7 @@ interface KitchenPreviewProps {
   onMoveObject: (id: string, pos: { x: number; y: number; z: number }) => void
   measurePoints: Point3[]
   onMeasureAdd: (p: Point3, surface: string) => void
+  highlightedWallId?: string | null
 }
 
 interface Drag {
@@ -37,7 +38,7 @@ interface MoveDrag {
   guides: { x?: number; z?: number }[]
 }
 
-export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, camera, unit, onOrbit, onZoom, frame, moveMode, activeTool, onMoveObject, measurePoints, onMeasureAdd }: KitchenPreviewProps) {
+export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, camera, unit, onOrbit, onZoom, frame, moveMode, activeTool, onMoveObject, measurePoints, onMeasureAdd, highlightedWallId }: KitchenPreviewProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const drag = useRef<Drag | null>(null)
   const moveDrag = useRef<MoveDrag | null>(null)
@@ -322,8 +323,9 @@ export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, 
       {verticalGuide()}
       {sortedDisplay.map((box) => {
         const selected = box.object.id === selectedId
+        const isHighlightedWall = highlightedWallId === box.object.id && box.object.kind === 'wall'
         const isDragging = movePreview && box.object.id === selectedId
-        const name = `${box.object.name}, ${displayMeasurement(box.object.dimensionsMm.width, unit)} ${unit} wide${selected ? ', selected' : ''}`
+        const name = `${box.object.name}, ${displayMeasurement(box.object.dimensionsMm.width, unit)} ${unit} wide${selected ? ', selected' : ''}${isHighlightedWall ? ', placement wall' : ''}`
         const faces = boxFaces(box).filter(isVisible).sort((a, b) => project(a.center).depth - project(b.center).depth)
         return (
           <g key={box.object.id} className="kitchen-object" data-object-id={box.object.id} role="button" tabIndex={0} aria-label={name} aria-pressed={selected} style={{ opacity: isDragging ? 0.9 : 1 }}
@@ -333,9 +335,11 @@ export function KitchenPreview({ objects, selectedId, onSelect, showGrid, zoom, 
             {faces.map((face) => {
               const wall = box.object.kind === 'wall'
               const fill = wall ? face.side === 'top' ? '#748470' : '#53664f' : face.side === 'top' ? '#f1f4e9' : face.side === 'bottom' ? '#a1b09a' : face.side === 'front' ? '#dfe5d5' : face.side === 'right' ? '#becab5' : '#ccd6c2'
-              const stroke = isDragging && selected ? '#ffd166' : selected ? '#72d79c' : '#788571'
-              return <g key={face.side}><polygon points={points(face.points)} fill={fill} stroke={stroke} strokeWidth={selected ? 2 : 1.5} strokeLinejoin="round" />{cabinetDetails(box, face.side)}</g>
+              const stroke = isHighlightedWall ? '#4da3ff' : isDragging && selected ? '#ffd166' : selected ? '#72d79c' : '#788571'
+              const sw = isHighlightedWall ? 3 : selected ? 2 : 1.5
+              return <g key={face.side}><polygon points={points(face.points)} fill={fill} stroke={stroke} strokeWidth={sw} strokeLinejoin="round" />{cabinetDetails(box, face.side)}</g>
             })}
+            {isHighlightedWall && <g pointerEvents="none"><text x={project(boxPoint(box, 0.5, 1.02, 0.5)).x} y={project(boxPoint(box, 0.5, 1.02, 0.5)).y - 12} textAnchor="middle" fontSize="11" fill="#4da3ff" fontWeight={700}>Placement wall — {box.object.name}</text></g>}
           </g>
         )
       })}

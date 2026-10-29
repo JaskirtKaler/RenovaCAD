@@ -208,12 +208,8 @@ func (s *Service) ProposeDraft(ctx context.Context, req model.LayoutDraftRequest
 		if !hasApproxWarning {
 			warnings = append([]string{"Approximate dimensions — please verify and measure before building."}, warnings...)
 		}
+		// Always treat photo-derived drafts as approximate — never trust model claim of exact measurements.
 		isApprox := true
-		if raw.IsApproximate != nil {
-			isApprox = *raw.IsApproximate
-		}
-		// Enforce approximate true for safety, even if model says false but dimensions are defaults.
-		// Keep as provided but ensure warnings present.
 
 		draft := &model.LayoutDraft{
 			Version:           model.LayoutDraftVersion,

@@ -1,5 +1,6 @@
-import type { SceneObject, ObjectKind, Unit, ViewMode } from './workspace'
+import type { SceneObject, ObjectKind, Unit, ViewMode, RoomMeasurements } from './workspace'
 import type { Camera, Projection } from './viewport'
+import { defaultRoomMeasurements } from './workspace'
 
 export const PROJECT_VERSION = 1
 // Practical limits for demo project files
@@ -37,6 +38,7 @@ export interface ProjectFile {
   camera: ProjectCamera
   viewMode: ViewMode
   referencePhoto: ProjectPhoto | null
+  roomMeasurements?: RoomMeasurements
 }
 
 const VALID_KINDS: ObjectKind[] = ['base-cabinet', 'wall-cabinet', 'tall-cabinet', 'wall', 'sink']
@@ -86,6 +88,15 @@ export function validateProject(data: unknown): ProjectFile {
       const v = pos[axis]
       assert(isFiniteNumber(v) && Math.abs(v as number) <= 10000, `Invalid project file: object ${i} has invalid position.${axis}`)
     }
+    // Optional approximateFields — preserves photo-derived confidence, compatible with legacy files
+    if (o.approximateFields !== undefined) {
+      const af = o.approximateFields as Record<string, unknown>
+      assert(af && typeof af === 'object', `Invalid project file: object ${i} has invalid approximateFields`)
+      for (const k of ['width', 'height', 'depth', 'x', 'y', 'z', 'rotation'] as const) {
+        const v = af[k]
+        assert(typeof v === 'boolean', `Invalid project file: object ${i} has invalid approximateFields.${k}`)
+      }
+    }
   }
   // ids unique
   const ids = (obj.scene as SceneObject[]).map(o => o.id)
@@ -116,6 +127,24 @@ export function validateProject(data: unknown): ProjectFile {
 
   // viewMode
   assert(typeof obj.viewMode === 'string' && (VALID_VIEW_MODES as string[]).includes(obj.viewMode), 'Invalid project file: invalid viewMode')
+
+  // roomMeasurements (optional, for known wall dimensions)
+  if (obj.roomMeasurements !== undefined) {
+    const rm = obj.roomMeasurements as Record<string, unknown>
+    assert(rm && typeof rm === 'object', 'Invalid project file: invalid roomMeasurements')
+    for (const k of ['wallLengthMm', 'wallHeightMm'] as const) {
+      const v = rm[k]
+      assert(v === null || (isFiniteNumber(v) && (v as number) >= 25.4 && (v as number) <= 10000), `Invalid project file: invalid roomMeasurements.${k}`)
+    }
+    for (const k of ['wallLengthProvenance', 'wallHeightProvenance'] as const) {
+      const v = rm[k]
+      assert(v === null || v === 'approximate' || v === 'user-entered', `Invalid project file: invalid roomMeasurements.${k}`)
+    }
+    for (const k of ['wallLengthConfirmed', 'wallHeightConfirmed'] as const) {
+      const v = rm[k]
+      assert(typeof v === 'boolean', `Invalid project file: invalid roomMeasurements.${k}`)
+    }
+  }
 
   // referencePhoto
   if (obj.referencePhoto !== null) {
@@ -163,27 +192,39 @@ export function serializeProject(project: ProjectFile): string {
   const clean: ProjectFile = {
     version: PROJECT_VERSION,
     name: project.name.trim(),
-    scene: project.scene.map(o => ({
-      id: o.id,
-      kind: o.kind,
-      name: o.name,
-      dimensionsMm: {
-        width: Math.round(o.dimensionsMm.width * 1000) / 1000,
-        height: Math.round(o.dimensionsMm.height * 1000) / 1000,
-        depth: Math.round(o.dimensionsMm.depth * 1000) / 1000,
-      },
-      rotationDegrees: Math.round(o.rotationDegrees * 1000) / 1000,
-      positionMm: {
-        x: Math.round(o.positionMm.x * 1000) / 1000,
-        y: Math.round(o.positionMm.y * 1000) / 1000,
-        z: Math.round(o.positionMm.z * 1000) / 1000,
-      },
-    })),
+    scene: project.scene.map(o => {
+      const base: SceneObject = {
+        id: o.id,
+        kind: o.kind,
+        name: o.name,
+        dimensionsMm: {
+          width: Math.round(o.dimensionsMm.width * 1000) / 1000,
+          height: Math.round(o.dimensionsMm.height * 1000) / 1000,
+          depth: Math.round(o.dimensionsMm.depth * 1000) / 1000,
+        },
+        rotationDegrees: Math.round(o.rotationDegrees * 1000) / 1000,
+        positionMm: {
+          x: Math.round(o.positionMm.x * 1000) / 1000,
+          y: Math.round(o.positionMm.y * 1000) / 1000,
+          z: Math.round(o.positionMm.z * 1000) / 1000,
+        },
+      }
+      if (o.approximateFields) base.approximateFields = { ...o.approximateFields }
+      return base
+    }),
     selectedId: project.selectedId,
     settings: { unit: project.settings.unit, showGrid: project.settings.showGrid },
     camera: { yaw: project.camera.yaw, pitch: project.camera.pitch, projection: project.camera.projection, zoom: project.camera.zoom },
     viewMode: project.viewMode,
     referencePhoto: project.referencePhoto ? { name: project.referencePhoto.name, mimeType: project.referencePhoto.mimeType, dataUrl: project.referencePhoto.dataUrl } : null,
+    roomMeasurements: project.roomMeasurements ? {
+      wallLengthMm: project.roomMeasurements.wallLengthMm === null ? null : Math.round(project.roomMeasurements.wallLengthMm * 1000) / 1000,
+      wallHeightMm: project.roomMeasurements.wallHeightMm === null ? null : Math.round(project.roomMeasurements.wallHeightMm * 1000) / 1000,
+      wallLengthProvenance: project.roomMeasurements.wallLengthProvenance,
+      wallHeightProvenance: project.roomMeasurements.wallHeightProvenance,
+      wallLengthConfirmed: !!project.roomMeasurements.wallLengthConfirmed,
+      wallHeightConfirmed: !!project.roomMeasurements.wallHeightConfirmed,
+    } : undefined,
   }
   // Validate before serializing
   validateProject(clean)
@@ -207,5 +248,6 @@ export function createDefaultProject(): ProjectFile {
     camera: { yaw: Math.atan2(-1, 1), pitch: Math.atan2(1, Math.hypot(-1, 1)), projection: 'perspective', zoom: 1 },
     viewMode: 'cad',
     referencePhoto: null,
+    roomMeasurements: { ...defaultRoomMeasurements },
   }
 }

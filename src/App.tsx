@@ -11,7 +11,7 @@ import { ViewCube } from './components/ViewCube'
 import { MoveControls } from './components/MoveControls'
 import { AxisIndicator } from './components/AxisIndicator'
 import { HOME_VIEW, cameraForView, orbitCamera, sceneFrame, viewLabel, type Camera, type CameraView, type Point3, distanceMm, movementPlaneIsUsable } from './viewport'
-import { displayMeasurement, objectCatalog, useWorkspace, type Axis, type Dimension, type ObjectKind, type PositionMm, type SceneObject, type Unit, type ViewMode } from './workspace'
+import { displayMeasurement, objectCatalog, useWorkspace, defaultRoomMeasurements, type Axis, type Dimension, type ObjectKind, type PositionMm, type SceneObject, type Unit, type ViewMode } from './workspace'
 import { PROJECT_VERSION, parseProject, serializeProject, type ProjectFile, type ProjectPhoto } from './project'
 
 const tools = [
@@ -96,7 +96,7 @@ function NumberField({ label, value, suffix, min = 1, max = 10000, onCommit }: {
   return <div className="dimension-field">
     <label htmlFor={`field-${label}`}>{label}</label>
     <div className={`number-input ${invalid ? 'invalid' : ''}`}>
-      <input id={`field-${label}`} aria-invalid={invalid} title={invalid ? `Enter a value between ${min} and ${max}.` : undefined} type="number" min={min} max={max} step="any" value={draft}
+      <input id={`field-${label}`} aria-invalid={invalid} title={invalid ? `Enter a value between ${min} and ${max}.` : undefined} type="text" inputMode="decimal" value={draft}
         onChange={(event) => { setDraft(event.target.value); setInvalid(false) }} onBlur={() => { if (skipCommit.current) { skipCommit.current = false; return } commit() }}
         aria-describedby={invalid ? `error-${label}` : undefined} onKeyDown={(event) => {
           if (event.key === 'Enter') event.currentTarget.blur()
@@ -105,6 +105,46 @@ function NumberField({ label, value, suffix, min = 1, max = 10000, onCommit }: {
       <span>{suffix}</span>
     </div>
     {invalid && <span id={`error-${label}`} className="sr-only" role="alert">Enter a number between {min} and {max}.</span>}
+  </div>
+}
+
+function DraftNumberField({ value, unit, min, max, suffix, ariaLabel, onCommit }: {
+  value: string
+  unit: Unit
+  min: number
+  max: number
+  suffix: string
+  ariaLabel: string
+  onCommit: (displayValue: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+  const [invalid, setInvalid] = useState<string | null>(null)
+  const skipCommit = useRef(false)
+  useEffect(() => {
+    // Only sync when not currently showing invalid — preserves user's invalid text until corrected
+    if (invalid) return
+    setDraft(value); setInvalid(null)
+  }, [value, unit])
+  const commit = () => {
+    const trimmed = draft.trim()
+    if (trimmed === '') { setInvalid('Enter a number'); onCommit(trimmed); return }
+    const parsed = Number(trimmed)
+    if (!Number.isFinite(parsed)) { setInvalid('Enter a number'); onCommit(trimmed); return }
+    if (parsed < min || parsed > max) { setInvalid(`Enter ${min}–${max} ${suffix}`); onCommit(trimmed); return }
+    setInvalid(null)
+    if (trimmed === value || parsed === Number(value)) { setDraft(value); return }
+    onCommit(trimmed)
+  }
+  return <div className={`number-input draft-number ${invalid ? 'invalid' : ''}`}>
+    <input aria-label={ariaLabel} aria-invalid={!!invalid} title={invalid ?? undefined} type="text" inputMode="decimal" value={draft}
+      onChange={(e) => { setDraft(e.target.value); setInvalid(null) }}
+      onBlur={() => { if (skipCommit.current) { skipCommit.current = false; return } commit() }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') (e.currentTarget as HTMLInputElement).blur()
+        if (e.key === 'Escape') { skipCommit.current = true; setDraft(value); setInvalid(null); (e.currentTarget as HTMLInputElement).blur() }
+      }} />
+    <span>{suffix}</span>
+    {invalid && <span className="field-error" role="alert">{invalid}</span>}
   </div>
 }
 
@@ -242,6 +282,11 @@ export default function App() {
   const layoutDraftGenerationRef = useRef<number | null>(null)
   // Per-object edited flags to distinguish approximate defaults vs user-entered values
   const [layoutEditedFlags, setLayoutEditedFlags] = useState<Array<{ name: boolean; width: boolean; height: boolean; depth: boolean; x: boolean; y: boolean; z: boolean; rotation: boolean }> | null>(null)
+  // Wall placement assistance
+  const [selectedWallId, setSelectedWallId] = useState<string | null>(null)
+  const [selectedWallSide, setSelectedWallSide] = useState<'front' | 'back'>('front')
+  const [wallPlacementError, setWallPlacementError] = useState<string | null>(null)
+  const [draftWallAssignments, setDraftWallAssignments] = useState<Record<number, string | null>>({})
 
   useEffect(() => {
     if (!notice) return
@@ -374,8 +419,9 @@ export default function App() {
       camera: { yaw: camera.yaw, pitch: camera.pitch, projection: camera.projection, zoom },
       viewMode: view,
       referencePhoto,
+      roomMeasurements: state.roomMeasurements ?? defaultRoomMeasurements,
     }
-  }, [projectName, state.present, state.selectedId, unit, showGrid, camera, zoom, view, photo])
+  }, [projectName, state.present, state.selectedId, unit, showGrid, camera, zoom, view, photo, state.roomMeasurements])
   useEffect(() => {
     buildProjectFileRef.current = buildProjectFile
   }, [buildProjectFile])
@@ -384,7 +430,7 @@ export default function App() {
     // Invalidate any in-flight saves' path assignment by bumping generation.
     projectGenerationRef.current += 1
     // Validate already done; now apply to workspace and presentation state.
-    dispatch({ kind: 'load', scene: project.scene, selectedId: project.selectedId })
+    dispatch({ kind: 'load', scene: project.scene, selectedId: project.selectedId, roomMeasurements: project.roomMeasurements })
     setProjectName(project.name)
     setProjectPath(filePath)
     setUnit(project.settings.unit)
@@ -420,6 +466,10 @@ export default function App() {
     layoutRequestGenerationRef.current = null
     setLayoutError(null)
     setLayoutNeedsInfo(null)
+    setSelectedWallId(null)
+    setSelectedWallSide('front')
+    setDraftWallAssignments({})
+    setWallPlacementError(null)
     setIsDirty(false)
     setSaveError(null)
     notify(`Opened ${project.name}`)
@@ -594,6 +644,7 @@ export default function App() {
       camera: { ...cameraForView(HOME_VIEW, 'perspective'), zoom: 1 },
       viewMode: 'cad' as const,
       referencePhoto: null,
+      roomMeasurements: { wallLengthMm: null, wallHeightMm: null, wallLengthProvenance: null, wallHeightProvenance: null, wallLengthConfirmed: false, wallHeightConfirmed: false },
     } as ProjectFile
     applyProjectFile(def, null)
     setIsDirty(false)
@@ -968,23 +1019,35 @@ export default function App() {
         return
       }
     }
-    // Build SceneObjects with stable IDs — use same normalized values as reducer will.
-    const sceneObjects: SceneObject[] = editable.map(o => ({
-      id: crypto.randomUUID(),
-      kind: o.kind,
-      name: o.name.trim(),
-      dimensionsMm: {
-        width: Math.round(o.dimensionsMm.width * 1000) / 1000,
-        height: Math.round(o.dimensionsMm.height * 1000) / 1000,
-        depth: Math.round(o.dimensionsMm.depth * 1000) / 1000,
-      },
-      rotationDegrees: Math.round(o.rotationDegrees * 1000) / 1000,
-      positionMm: {
-        x: Math.round(o.positionMm.x * 1000) / 1000,
-        y: Math.round(o.positionMm.y * 1000) / 1000,
-        z: Math.round(o.positionMm.z * 1000) / 1000,
-      },
-    }))
+    // Build SceneObjects with confidence derived from edited flags: edited => not approximate (user-edited, not verified), non-edited => approximate from photo.
+    const sceneObjects: SceneObject[] = editable.map((o, idx) => {
+      const flags = layoutEditedFlags?.[idx] ?? { name: false, width: false, height: false, depth: false, x: false, y: false, z: false, rotation: false }
+      return {
+        id: crypto.randomUUID(),
+        kind: o.kind,
+        name: o.name.trim(),
+        dimensionsMm: {
+          width: Math.round(o.dimensionsMm.width * 1000) / 1000,
+          height: Math.round(o.dimensionsMm.height * 1000) / 1000,
+          depth: Math.round(o.dimensionsMm.depth * 1000) / 1000,
+        },
+        rotationDegrees: Math.round(o.rotationDegrees * 1000) / 1000,
+        positionMm: {
+          x: Math.round(o.positionMm.x * 1000) / 1000,
+          y: Math.round(o.positionMm.y * 1000) / 1000,
+          z: Math.round(o.positionMm.z * 1000) / 1000,
+        },
+        approximateFields: {
+          width: !flags.width,
+          height: !flags.height,
+          depth: !flags.depth,
+          x: !flags.x,
+          y: !flags.y,
+          z: !flags.z,
+          rotation: !flags.rotation,
+        },
+      }
+    })
     // Attempt to apply via reducer; verify it would succeed by checking pre-conditions already met.
     // Keep draft visible until success — only clear after dispatch is known to have succeeded.
     // Since reducer is synchronous and validated identically, we can consider success if we reach here.
@@ -1045,9 +1108,9 @@ export default function App() {
   const displayToMm = (displayVal: number): number => (unit === 'in' ? displayVal * 25.4 : displayVal)
 
   const updateDraftDimension = (index: number, field: 'width' | 'height' | 'depth', displayValue: string) => {
-    const parsed = Number(displayValue)
-    if (!Number.isFinite(parsed)) return
-    const mm = displayToMm(parsed)
+    const trimmed = displayValue.trim()
+    const parsed = Number(trimmed)
+    const mm = trimmed === '' || !Number.isFinite(parsed) ? NaN : displayToMm(parsed)
     setLayoutDraftEditable(prev => {
       if (!prev) return prev
       const next = [...prev]
@@ -1067,9 +1130,9 @@ export default function App() {
   }
 
   const updateDraftPosition = (index: number, axis: 'x' | 'y' | 'z', displayValue: string) => {
-    const parsed = Number(displayValue)
-    if (!Number.isFinite(parsed)) return
-    const mm = displayToMm(parsed)
+    const trimmed = displayValue.trim()
+    const parsed = Number(trimmed)
+    const mm = trimmed === '' || !Number.isFinite(parsed) ? NaN : displayToMm(parsed)
     setLayoutDraftEditable(prev => {
       if (!prev) return prev
       const next = [...prev]
@@ -1108,8 +1171,28 @@ export default function App() {
   }
 
   const updateDraftRotation = (index: number, displayValue: string) => {
-    const parsed = Number(displayValue)
-    if (!Number.isFinite(parsed)) return
+    const trimmed = displayValue.trim()
+    const parsed = Number(trimmed)
+    const rot = trimmed === '' || !Number.isFinite(parsed) ? NaN : parsed
+    if (Number.isNaN(rot)) {
+      setLayoutDraftEditable(prev => {
+        if (!prev) return prev
+        const next = [...prev]
+        const old = next[index]
+        if (!old) return prev
+        next[index] = { ...old, rotationDegrees: NaN }
+        return next
+      })
+      setLayoutEditedFlags(prev => {
+        if (!prev) return prev
+        const next = [...prev]
+        const old = next[index]
+        if (!old) return prev
+        next[index] = { ...old, rotation: true }
+        return next
+      })
+      return
+    }
     setLayoutDraftEditable(prev => {
       if (!prev) return prev
       const next = [...prev]
@@ -1131,7 +1214,329 @@ export default function App() {
   const removeDraftObject = (index: number) => {
     setLayoutDraftEditable(prev => prev ? prev.filter((_, i) => i !== index) : prev)
     setLayoutEditedFlags(prev => prev ? prev.filter((_, i) => i !== index) : prev)
+    setDraftWallAssignments(prev => {
+      const next: Record<number, string | null> = {}
+      Object.entries(prev).forEach(([k, v]) => {
+        const idx = Number(k)
+        if (idx < index) next[idx] = v
+        else if (idx > index) next[idx - 1] = v
+      })
+      return next
+    })
   }
+
+  const demoDraft: LayoutDraft = {
+    version: 1,
+    objects: [
+      { kind: 'base-cabinet', name: 'Demo Base 1', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, positionMm: { x: -650, y: 0, z: -300 }, rotationDegrees: 0 },
+      { kind: 'wall-cabinet', name: 'Demo Wall 1', dimensionsMm: { width: 914.4, height: 762, depth: 304.8 }, positionMm: { x: -650, y: 1480, z: -300 }, rotationDegrees: 0 },
+      { kind: 'sink', name: 'Demo Sink', dimensionsMm: { width: 762, height: 228.6, depth: 508 }, positionMm: { x: 400, y: 0, z: -300 }, rotationDegrees: 0 },
+    ],
+    description: 'Demo draft — offline fixture. Approximate positions along a sample wall. Not a live Baseten response.',
+    followUpQuestions: ['What is the wall length?', 'Confirm cabinet heights?'],
+    warnings: ['Approximate dimensions — please verify and measure before building.', 'Demo fixture — not a live AI result.'],
+    isApproximate: true,
+  }
+
+  const handleLoadDemoDraft = () => {
+    setLayoutError(null)
+    setLayoutNeedsInfo(null)
+    setLayoutDraft(demoDraft)
+    setLayoutDraftEditable(demoDraft.objects.map(o => ({ ...o, dimensionsMm: { ...o.dimensionsMm }, positionMm: { ...o.positionMm } })))
+    setLayoutEditedFlags(demoDraft.objects.map(() => ({ name: false, width: false, height: false, depth: false, x: false, y: false, z: false, rotation: false })))
+    layoutDraftRevisionRef.current = stateRevisionRef.current
+    layoutDraftGenerationRef.current = projectGenerationRef.current
+    setSelectedWallId(null)
+    setSelectedWallSide('front')
+    setDraftWallAssignments({})
+    setWallPlacementError(null)
+    if (!photo) {
+      setPhoto({ dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=', name: 'demo-kitchen.png', mimeType: 'image/png' })
+    }
+    setView('photo')
+  }
+
+  const handleArrangeAlongWall = () => {
+    if (!layoutDraftEditable || layoutDraftEditable.length === 0) { setWallPlacementError('No draft objects to arrange.'); return }
+    // Helper to get wall face info
+    const getWallFace = (w: SceneObject): { availableLength: number; faceCoord: number; axis: 'x' | 'z'; wallSide: string; thickness: number } | { error: string } => {
+      const rot = ((w.rotationDegrees % 360) + 360) % 360
+      const isXAligned = Math.abs(rot) < 0.5 || Math.abs(rot - 180) < 0.5
+      const isZAligned = Math.abs(rot - 90) < 0.5 || Math.abs(rot - 270) < 0.5
+      if (!isXAligned && !isZAligned) return { error: `Wall "${w.name}" is rotated ${w.rotationDegrees}° — only 0° or 90° walls supported. Place manually.` }
+      const thickness = w.dimensionsMm.depth
+      const length = w.dimensionsMm.width
+      if (isXAligned) {
+        // X-aligned: length along X, thickness along Z, front at z+depth, back at z - objectDepth
+        const faceZ = selectedWallSide === 'front' ? w.positionMm.z + thickness : w.positionMm.z
+        return { availableLength: length, faceCoord: faceZ, axis: 'x', wallSide: selectedWallSide === 'front' ? `front (Z=${faceZ.toFixed(1)} mm, thickness ${thickness} mm)` : `back (Z=${faceZ.toFixed(1)} mm)`, thickness }
+      } else {
+        // Z-aligned: length along Z, thickness along X
+        const faceX = selectedWallSide === 'front' ? w.positionMm.x + thickness : w.positionMm.x
+        return { availableLength: length, faceCoord: faceX, axis: 'z', wallSide: selectedWallSide === 'front' ? `front (X=${faceX.toFixed(1)} mm, thickness ${thickness} mm)` : `back (X=${faceX.toFixed(1)} mm)`, thickness }
+      }
+    }
+
+    // Build wall groups for L-shaped: allow per-object wall assignment via draftWallAssignments
+    const wallsById = new Map(state.present.filter(o => o.kind === 'wall').map(w => [w.id, w]))
+    const resolveWallForIndex = (idx: number): SceneObject | null => {
+      const assigned = draftWallAssignments[idx]
+      if (assigned) return wallsById.get(assigned) ?? null
+      if (selectedWallId && selectedWallId !== 'room' && wallsById.has(selectedWallId)) return wallsById.get(selectedWallId)!
+      // fallback to room virtual wall or first wall
+      return null
+    }
+
+    // If any draft has explicit wall assignment, we handle groups
+    const hasExplicitAssignments = Object.keys(draftWallAssignments).length > 0
+    // Check supported geometry for all draft objects first
+    for (const o of layoutDraftEditable) {
+      if (Math.abs(o.rotationDegrees) > 0.5) { setWallPlacementError(`"${o.name}" is rotated (${o.rotationDegrees}°) — only axis-aligned objects can be auto-placed. Place it manually.`); return }
+      if (o.kind === 'wall') { setWallPlacementError(`"${o.name}" is a wall — auto-placement along a wall is for cabinets/sink. Place walls manually.`); return }
+    }
+
+    // For single-wall mode (no per-object assignments), use selectedWallId or room
+    if (!hasExplicitAssignments) {
+      let wall: SceneObject | null = null
+      let availableLength: number | null = null
+      let faceCoord = 0
+      let axis: 'x' | 'z' = 'x'
+      let wallSideDesc = ''
+      let wallThickness = 0
+      if (selectedWallId === 'room' || selectedWallId === null) {
+        const rmLen = (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm
+        if (rmLen !== null) {
+          availableLength = rmLen
+          // Virtual wall at origin, thickness 152.4 mm (standard wall)
+          wallThickness = 152.4
+          faceCoord = selectedWallSide === 'front' ? -300 + wallThickness : -300
+          axis = 'x'
+          wallSideDesc = selectedWallSide === 'front' ? `front (Z=${faceCoord.toFixed(1)} mm)` : `back (Z=${faceCoord.toFixed(1)} mm)`
+        } else {
+          wall = state.present.find(o => o.kind === 'wall') ?? null
+          if (!wall) { setWallPlacementError('Select a wall or enter a wall length in Room Measurements first.'); return }
+          const res = getWallFace(wall)
+          if ('error' in res) { setWallPlacementError(res.error); return }
+          availableLength = res.availableLength
+          faceCoord = res.faceCoord
+          axis = res.axis
+          wallSideDesc = res.wallSide
+          wallThickness = res.thickness
+        }
+      } else {
+        wall = state.present.find(o => o.id === selectedWallId) ?? null
+        if (!wall || wall.kind !== 'wall') { setWallPlacementError('Selected wall not found.'); return }
+        const res = getWallFace(wall)
+        if ('error' in res) { setWallPlacementError(res.error); return }
+        availableLength = res.availableLength
+        faceCoord = res.faceCoord
+        axis = res.axis
+        wallSideDesc = res.wallSide
+        wallThickness = res.thickness
+      }
+      if (availableLength === null) { setWallPlacementError('Wall length not available.'); return }
+      const totalWidth = layoutDraftEditable.reduce((sum, o) => sum + o.dimensionsMm.width, 0)
+      if (totalWidth > availableLength + 0.001) {
+        setWallPlacementError(`Objects need ${displayMeasurement(totalWidth, unit)} ${unit} but wall is only ${displayMeasurement(availableLength, unit)} ${unit}. Remove or shrink objects, or use a longer wall.`)
+        return
+      }
+      // Wall height check
+      const wallHeight = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightMm
+      if (wallHeight !== null) {
+        for (const o of layoutDraftEditable) {
+          const top = o.positionMm.y + o.dimensionsMm.height
+          if (top > wallHeight + 0.001) {
+            const hLabel = displayMeasurement(o.dimensionsMm.height, unit)
+            const whLabel = displayMeasurement(wallHeight, unit)
+            const prov = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightProvenance
+            const conf = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightConfirmed ? 'confirmed' : prov ? `${prov} not confirmed` : 'approx'
+            setWallPlacementError(`"${o.name}" height ${hLabel}${unit} at Y ${displayMeasurement(o.positionMm.y, unit)} exceeds wall height ${whLabel}${unit} (${conf}). Not resized — adjust manually.`)
+            return
+          }
+        }
+      }
+      // Place sequentially snap adjacent
+      if (axis === 'x') {
+        let cursor = wall ? wall.positionMm.x : -650
+        // For virtual wall, start at -650 as before; for real wall, start at wall's min
+        if (wall) {
+          // For X-aligned wall, start at wall's min X
+          cursor = wall.positionMm.x
+          // If wall is part of L-shaped corner and other wall occupies corner, we don't reserve; user must decide.
+        } else {
+          cursor = -650
+        }
+        setLayoutDraftEditable(prev => {
+          if (!prev) return prev
+          return prev.map(o => {
+            const isUpper = o.positionMm.y >= 1000
+            // For upper cabinets, keep same X but Z at face (still against wall)
+            const placedZ = selectedWallSide === 'front' ? faceCoord : faceCoord - o.dimensionsMm.depth
+            const placed = { ...o, positionMm: { ...o.positionMm, x: Math.round(cursor * 1000)/1000, z: Math.round(placedZ * 1000)/1000 } }
+            cursor += o.dimensionsMm.width
+            return placed
+          })
+        })
+      } else {
+        let cursor = wall ? wall.positionMm.z : -300
+        if (wall) cursor = wall.positionMm.z
+        setLayoutDraftEditable(prev => {
+          if (!prev) return prev
+          return prev.map(o => {
+            const placedX = selectedWallSide === 'front' ? faceCoord : faceCoord - o.dimensionsMm.depth
+            // For Z-aligned, width along Z, so cursor along Z
+            const placed = { ...o, positionMm: { ...o.positionMm, z: Math.round(cursor * 1000)/1000, x: Math.round(placedX * 1000)/1000, y: o.positionMm.y }, rotationDegrees: 90 }
+            cursor += o.dimensionsMm.width
+            return placed
+          })
+        })
+      }
+      setLayoutEditedFlags(prev => {
+        if (!prev) return prev
+        // For Z-aligned walls, rotation also changes
+        const isZ = axis === 'z'
+        return prev.map(f => ({ ...f, x: true, z: true, rotation: isZ ? true : f.rotation }))
+      })
+      setWallPlacementError(null)
+      notify(`Arranged ${layoutDraftEditable.length} objects against wall ${wallSideDesc} — snap adjacent, ${displayMeasurement(totalWidth, unit)} ${unit} of ${displayMeasurement(availableLength, unit)} ${unit} used. You can still adjust manually.`)
+      return
+    }
+
+    // L-shaped: group by assigned wall
+    const groups = new Map<string, number[]>()
+    layoutDraftEditable.forEach((_, idx) => {
+      const wid = draftWallAssignments[idx] ?? selectedWallId ?? 'room'
+      const key = wid ?? 'room'
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key)!.push(idx)
+    })
+    // Validate each group
+    for (const [wid, indices] of groups) {
+      let avail: number | null = null
+      if (wid === 'room') {
+        avail = (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm
+        if (avail === null) { setWallPlacementError('Room wall length not set for some objects. Set it in Room Measurements.'); return }
+      } else {
+        const w = wallsById.get(wid)
+        if (!w) { setWallPlacementError(`Wall ${wid} not found for some objects.`); return }
+        const res = getWallFace(w)
+        if ('error' in res) { setWallPlacementError(res.error); return }
+        avail = res.availableLength
+      }
+      const total = indices.reduce((s, i) => s + layoutDraftEditable[i].dimensionsMm.width, 0)
+      if (total > (avail as number) + 0.001) {
+        const wName = wid === 'room' ? 'Room wall' : wallsById.get(wid)?.name ?? wid
+        setWallPlacementError(`Wall "${wName}" needs ${displayMeasurement(total, unit)} ${unit} but length is only ${displayMeasurement(avail as number, unit)} ${unit}.`)
+        return
+      }
+    }
+    // Height check for all
+    const wallHeight = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightMm
+    if (wallHeight !== null) {
+      for (const o of layoutDraftEditable) {
+        const top = o.positionMm.y + o.dimensionsMm.height
+        if (top > wallHeight + 0.001) {
+          setWallPlacementError(`"${o.name}" exceeds wall height ${displayMeasurement(wallHeight, unit)} ${unit}. Not resized.`)
+          return
+        }
+      }
+    }
+    // Place each group sequentially
+    setLayoutDraftEditable(prev => {
+      if (!prev) return prev
+      const next = [...prev]
+      for (const [wid, indices] of groups) {
+        let wall: SceneObject | null = null
+        let faceCoord = 0
+        let axis: 'x' | 'z' = 'x'
+        let start = 0
+        if (wid === 'room') {
+          const rmLen = (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm as number
+          // Virtual wall at -650, front at -300+152.4
+          faceCoord = selectedWallSide === 'front' ? -300 + 152.4 : -300
+          axis = 'x'
+          start = -650
+        } else {
+          wall = wallsById.get(wid)!
+          const res = getWallFace(wall) as { availableLength: number; faceCoord: number; axis: 'x'|'z'; wallSide: string; thickness: number }
+          faceCoord = res.faceCoord
+          axis = res.axis
+          start = axis === 'x' ? wall.positionMm.x : wall.positionMm.z
+        }
+        let cursor = start
+        for (const idx of indices) {
+          const o = next[idx]
+          if (axis === 'x') {
+            const placedZ = selectedWallSide === 'front' ? faceCoord : faceCoord - o.dimensionsMm.depth
+            next[idx] = { ...o, positionMm: { ...o.positionMm, x: Math.round(cursor*1000)/1000, z: Math.round(placedZ*1000)/1000 } }
+            cursor += o.dimensionsMm.width
+          } else {
+            const placedX = selectedWallSide === 'front' ? faceCoord : faceCoord - o.dimensionsMm.depth
+            next[idx] = { ...o, positionMm: { ...o.positionMm, z: Math.round(cursor*1000)/1000, x: Math.round(placedX*1000)/1000, y: o.positionMm.y }, rotationDegrees: 90 }
+            cursor += o.dimensionsMm.width
+          }
+        }
+      }
+      return next
+    })
+    setLayoutEditedFlags(prev => {
+      if (!prev) return prev
+      // Check if any group was Z-aligned (rotation change)
+      let anyZ = false
+      for (const [wid] of groups) {
+        if (wid === 'room') continue
+        const w = wallsById.get(wid)
+        if (w) {
+          const rot = ((w.rotationDegrees % 360) + 360) % 360
+          if (Math.abs(rot - 90) < 0.5 || Math.abs(rot - 270) < 0.5) anyZ = true
+        }
+      }
+      return prev.map(f => ({ ...f, x: true, z: true, rotation: anyZ ? true : f.rotation }))
+    })
+    setWallPlacementError(null)
+    notify(`Arranged ${layoutDraftEditable.length} objects across ${groups.size} wall(s) — snap adjacent, manual adjust preserved.`)
+  }
+
+  const draftOverlaps = (() => {
+    if (!layoutDraftEditable || layoutDraftEditable.length === 0) return [] as string[]
+    const msgs: string[] = []
+    const allExisting = state.present
+    const drafts = layoutDraftEditable
+    const overlapsSimple = (a: { positionMm: PositionMm; dimensionsMm: { width: number; height: number; depth: number }; rotationDegrees: number; name: string }, b: { positionMm: PositionMm; dimensionsMm: { width: number; height: number; depth: number }; rotationDegrees: number; name: string }) => {
+      if (Math.abs(a.rotationDegrees) > 0.5 || Math.abs(b.rotationDegrees) > 0.5) return null // rotated limitation: cannot check accurately
+      const ax1 = a.positionMm.x, ax2 = a.positionMm.x + a.dimensionsMm.width
+      const az1 = a.positionMm.z, az2 = a.positionMm.z + a.dimensionsMm.depth
+      const ay1 = a.positionMm.y, ay2 = a.positionMm.y + a.dimensionsMm.height
+      const bx1 = b.positionMm.x, bx2 = b.positionMm.x + b.dimensionsMm.width
+      const bz1 = b.positionMm.z, bz2 = b.positionMm.z + b.dimensionsMm.depth
+      const by1 = b.positionMm.y, by2 = b.positionMm.y + b.dimensionsMm.height
+      const overlapXZ = ax1 < bx2 && ax2 > bx1 && az1 < bz2 && az2 > bz1
+      const overlapY = ay1 < by2 && ay2 > by1
+      if (Math.abs(ax2 - bx1) < 0.001 || Math.abs(bx2 - ax1) < 0.001 || Math.abs(az2 - bz1) < 0.001 || Math.abs(bz2 - az1) < 0.001) return false // touching edges not overlapping
+      if (!overlapXZ) return false
+      if (!overlapY) return false
+      return true
+    }
+    for (let i = 0; i < drafts.length; i++) {
+      for (let j = 0; j < allExisting.length; j++) {
+        if (overlapsSimple(drafts[i], allExisting[j])) msgs.push(`"${drafts[i].name}" overlaps existing "${allExisting[j].name}" (approx. footprint)`)
+      }
+      for (let j = i + 1; j < drafts.length; j++) {
+        if (overlapsSimple(drafts[i], drafts[j])) msgs.push(`"${drafts[i].name}" overlaps "${drafts[j].name}" (approx. footprint)`)
+      }
+    }
+    return msgs.slice(0, 3)
+  })()
+
+  const heightWarnings = (() => {
+    const h = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightMm
+    if (h === null || !layoutDraftEditable) return [] as string[]
+    const prov = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightProvenance
+    const conf = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightConfirmed
+    const hLabel = displayMeasurement(h, unit)
+    const hDesc = conf ? 'confirmed' : prov ? `${prov} not confirmed` : 'approx'
+    return layoutDraftEditable.filter(o => o.positionMm.y + o.dimensionsMm.height > h + 0.001).map(o => `"${o.name}" top ${displayMeasurement(o.positionMm.y + o.dimensionsMm.height, unit)}${unit} exceeds wall height ${hLabel}${unit} (${hDesc}) — not resized, adjust manually.`)
+  })()
 
   return <div className={`app ${isDesktop ? 'is-desktop' : ''}`}>
     <header className="app-header">
@@ -1177,12 +1582,55 @@ export default function App() {
             {selectedObject ? <>
               <div className="selected-object"><span className="selected-object-icon"><ObjectIcon kind={selectedObject.kind} size={21} /></span><div><strong>{selectedObject.name}</strong><span>{selectedObject.kind.includes('cabinet') ? 'Cabinetry' : 'Kitchen object'}<span className="inline-dot">·</span>{selectedObject.id.endsWith('01') ? selectedObject.id.toUpperCase() : 'CUSTOM'}</span></div><IconButton label="Delete selected object" onClick={handleDelete}><Trash2 size={15} /></IconButton></div>
               <div className="property-heading">Dimensions<span>{unit === 'in' ? 'Inches' : 'Millimeters'}</span></div>
-              <div className="dimension-fields">{(['width', 'height', 'depth'] satisfies Dimension[]).map((dimension) => <NumberField key={`${selectedObject.id}-${dimension}`} label={dimension[0].toUpperCase() + dimension.slice(1)} value={measurement(selectedObject, dimension)} suffix={unit} min={unit === 'in' ? 1 : 25.4} max={unit === 'in' ? 10000 / 25.4 : 10000} onCommit={(value) => handleResize(dimension, unit === 'in' ? value * 25.4 : value)} />)}</div>
+              <div className="dimension-fields">{(['width', 'height', 'depth'] satisfies Dimension[]).map((dimension) => {
+                const approx = selectedObject.approximateFields?.[dimension]
+                const badge = approx === undefined ? null : approx ? <span className="approx-badge" title="Approximate from photo — please measure">approx</span> : <span className="edited-badge" title="User-edited — not verified for construction">edited</span>
+                return <div key={`${selectedObject.id}-${dimension}-wrap`} className="dimension-wrap"><NumberField key={`${selectedObject.id}-${dimension}`} label={dimension[0].toUpperCase() + dimension.slice(1)} value={measurement(selectedObject, dimension)} suffix={unit} min={unit === 'in' ? 1 : 25.4} max={unit === 'in' ? 10000 / 25.4 : 10000} onCommit={(value) => handleResize(dimension, unit === 'in' ? value * 25.4 : value)} />{badge}</div>
+              })}</div>
               <div className="property-heading transform-heading">Transform<IconButton label="Reset rotation" onClick={() => handleRotate(0)}><RotateCcw size={13} /></IconButton></div>
               <NumberField key={`${selectedObject.id}-rotation`} label="Rotation" value={String(selectedObject.rotationDegrees)} suffix="°" min={-360} max={360} onCommit={(degrees) => handleRotate(degrees)} />
+              {selectedObject.approximateFields && <div className="confidence-note">{Object.values(selectedObject.approximateFields).some(Boolean) ? <span><span className="approx-badge">approx</span> Some values are approximate from photo — measure before building. <span className="edited-badge">edited</span> means you changed it, not that it is verified.</span> : <span><span className="edited-badge">edited</span> Values were adjusted from photo estimates — not verified.</span>}</div>}
               <MoveControls object={selectedObject} unit={unit} onNudge={handleNudge} onSetPosition={handleSetPosition} />
               <div className="property-note"><span className="tiny-dot" />Dimensions are editable in this preview</div>
             </> : <div className="no-selection"><MousePointer2 size={24} /><span>Select an object to see its properties.</span></div>}
+          </section>
+
+          <section className="room-measurements-section">
+            <div className="section-label">ROOM MEASUREMENTS <span className="tiny-dot" /></div>
+            <p className="room-measurements-note">Enter known measurements. Values are stored in mm; display uses your selected unit. Confirming records your confirmation — not professional verification.</p>
+            {(['wallLength', 'wallHeight'] as const).map((field) => {
+              const label = field === 'wallLength' ? 'Wall length' : 'Wall/room height'
+              const valueMm = field === 'wallLength' ? (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm : (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightMm
+              const confirmed = field === 'wallLength' ? (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthConfirmed : (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightConfirmed
+              const provenance = field === 'wallLength' ? (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthProvenance : (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightProvenance
+              const displayValue = valueMm === null ? '' : displayMeasurement(valueMm, unit)
+              const min = unit === 'in' ? 1 : 25.4
+              const max = unit === 'in' ? 10000 / 25.4 : 10000
+              const handleCommit = (val: number) => {
+                dispatch({ kind: 'set-room-measurement', field, valueMm: unit === 'in' ? val * 25.4 : val })
+                setIsDirty(true)
+              }
+              const handleClear = () => {
+                dispatch({ kind: 'set-room-measurement', field, valueMm: null })
+                setIsDirty(true)
+              }
+              const handleConfirm = () => {
+                dispatch({ kind: 'confirm-room-measurement', field })
+                setIsDirty(true)
+              }
+              return (
+                <div key={field} className="room-measurement-field">
+                  <div className="property-heading">{label} <span>{unit}</span> {provenance && <span className={provenance === 'user-entered' ? 'edited-badge' : 'approx-badge'}>{provenance === 'user-entered' ? 'user-entered' : 'approx'}</span>} {confirmed && <span className="confirmed-badge">confirmed</span>}{!confirmed && valueMm !== null && <span className="unconfirmed-badge">not confirmed</span>}</div>
+                  <div className="room-measurement-input">
+                    <NumberField label={label} value={displayValue} suffix={unit} min={min} max={max} onCommit={handleCommit} />
+                    <button className="secondary-button" aria-label={`Confirm ${label}`} disabled={valueMm === null || confirmed} onClick={handleConfirm}>Confirm measurement</button>
+                    <button className="text-button" aria-label={`Clear ${label}`} disabled={valueMm === null} onClick={handleClear}>Clear</button>
+                  </div>
+                  {valueMm !== null && !confirmed && <p className="field-hint">Not yet confirmed — click Confirm measurement to record your confirmation. Editing does not imply verified construction.</p>}
+                  {confirmed && <p className="field-hint">Confirmed — you confirmed this measurement. Revising will clear confirmation.</p>}
+                </div>
+              )
+            })}
           </section>
 
           <section className="scene-section"><div className="scene-heading"><span className="section-label">SCENE OBJECTS</span><span className="count-badge">{state.present.length}</span></div>
@@ -1209,7 +1657,7 @@ export default function App() {
           {view === 'cad' ? <>
             <div className="canvas-caption"><span className="canvas-status-dot" />LIVE PREVIEW<span className="canvas-caption-divider" /><span>{selectedObject?.name ?? 'Kitchen scene'}</span></div>
             <ViewCube camera={camera} onView={changeCameraView} onHome={resetCamera} />
-            <KitchenPreview objects={state.present} selectedId={state.selectedId} onSelect={(id) => dispatch({ kind: 'select', id })} showGrid={showGrid} zoom={zoom} camera={camera} unit={unit} onOrbit={orbit} onZoom={changeZoom} frame={frame} moveMode={activeTool === 'move'} activeTool={activeTool} onMoveObject={handleMoveObject} measurePoints={measurePoints} onMeasureAdd={handleMeasureAdd} />
+            <KitchenPreview objects={state.present} selectedId={state.selectedId} onSelect={(id) => dispatch({ kind: 'select', id })} showGrid={showGrid} zoom={zoom} camera={camera} unit={unit} onOrbit={orbit} onZoom={changeZoom} frame={frame} moveMode={activeTool === 'move'} activeTool={activeTool} onMoveObject={handleMoveObject} measurePoints={measurePoints} onMeasureAdd={handleMeasureAdd} highlightedWallId={layoutDraft && selectedWallId && selectedWallId !== 'room' ? selectedWallId : null} />
             <AxisIndicator camera={camera} />
             {activeTool === 'measure' && (
               <div className="measure-hud" role="status" aria-live="polite">
@@ -1274,6 +1722,15 @@ export default function App() {
                 >
                   {layoutLoading ? <><span className="loading-dot" />Creating draft…</> : <><Sparkles size={14} />Create draft layout</>}
                 </button>
+                <button
+                  className="secondary-button"
+                  onClick={handleLoadDemoDraft}
+                  disabled={layoutLoading}
+                  aria-label="Load demo draft"
+                >
+                  Load demo draft (offline fixture)
+                </button>
+                <p className="demo-note">Demo fixture — clearly labeled, not a live AI response. Lets you try draft review without a provider.</p>
                 {layoutLoading && <div className="ai-status loading" role="status"><span className="loading-dot" /><span>Sending photo to Baseten for draft…</span></div>}
                 {layoutError && <div className="ai-error" role="alert"><X size={14} /><p>{layoutError}</p><button className="secondary-button" onClick={() => setLayoutError(null)}>Dismiss</button></div>}
                 {layoutNeedsInfo && (
@@ -1301,7 +1758,11 @@ export default function App() {
                       {layoutDraftEditable.map((obj, idx) => {
                         const flags = layoutEditedFlags?.[idx] ?? { name: false, width: false, height: false, depth: false, x: false, y: false, z: false, rotation: false }
                         const unitLabel = unit === 'in' ? 'in' : 'mm'
-                        const badge = (edited: boolean) => edited ? <span className="edited-badge" title="You entered this value">edited</span> : <span className="approx-badge" title="Approximate from photo — please measure">approx</span>
+                        const badge = (edited: boolean) => edited ? <span className="edited-badge" title="You entered this value — not verified for construction">edited — not verified</span> : <span className="approx-badge" title="Approximate from photo — please measure">approx</span>
+                        const dimMin = unit === 'in' ? 1 : 25.4
+                        const dimMax = unit === 'in' ? 10000 / 25.4 : 10000
+                        const posMin = unit === 'in' ? -10000 / 25.4 : -10000
+                        const posMax = unit === 'in' ? 10000 / 25.4 : 10000
                         return (
                         <div key={idx} className="layout-object-card">
                           <div className="layout-object-header">
@@ -1310,24 +1771,89 @@ export default function App() {
                           </div>
                           <div className="layout-object-name">
                             <label>Name{flags.name ? badge(true) : badge(false)}<input value={obj.name} onChange={(e) => updateDraftName(idx, e.target.value)} aria-label={`${obj.name} name`} /></label>
+                            <small className="field-hint">Editing does not imply verified measurement</small>
                           </div>
                           <div className="layout-object-dims">
-                            <label>Width ({unitLabel}){badge(flags.width)}<input type="number" value={mmToDisplay(obj.dimensionsMm.width)} onChange={(e) => updateDraftDimension(idx, 'width', e.target.value)} aria-label={`${obj.name} width`} /></label>
-                            <label>Height ({unitLabel}){badge(flags.height)}<input type="number" value={mmToDisplay(obj.dimensionsMm.height)} onChange={(e) => updateDraftDimension(idx, 'height', e.target.value)} aria-label={`${obj.name} height`} /></label>
-                            <label>Depth ({unitLabel}){badge(flags.depth)}<input type="number" value={mmToDisplay(obj.dimensionsMm.depth)} onChange={(e) => updateDraftDimension(idx, 'depth', e.target.value)} aria-label={`${obj.name} depth`} /></label>
+                            <label>Width ({unitLabel}){badge(flags.width)}<DraftNumberField value={mmToDisplay(obj.dimensionsMm.width)} unit={unit} min={dimMin} max={dimMax} suffix={unitLabel} ariaLabel={`${obj.name} width`} onCommit={(v) => updateDraftDimension(idx, 'width', v)} /></label>
+                            <label>Height ({unitLabel}){badge(flags.height)}<DraftNumberField value={mmToDisplay(obj.dimensionsMm.height)} unit={unit} min={dimMin} max={dimMax} suffix={unitLabel} ariaLabel={`${obj.name} height`} onCommit={(v) => updateDraftDimension(idx, 'height', v)} /></label>
+                            <label>Depth ({unitLabel}){badge(flags.depth)}<DraftNumberField value={mmToDisplay(obj.dimensionsMm.depth)} unit={unit} min={dimMin} max={dimMax} suffix={unitLabel} ariaLabel={`${obj.name} depth`} onCommit={(v) => updateDraftDimension(idx, 'depth', v)} /></label>
                           </div>
                           <div className="layout-object-pos">
-                            <label>X ({unitLabel}){badge(flags.x)}<input type="number" value={mmToDisplay(obj.positionMm.x)} onChange={(e) => updateDraftPosition(idx, 'x', e.target.value)} aria-label={`${obj.name} x`} /></label>
-                            <label>Y ({unitLabel}){badge(flags.y)}<input type="number" value={mmToDisplay(obj.positionMm.y)} onChange={(e) => updateDraftPosition(idx, 'y', e.target.value)} aria-label={`${obj.name} y`} /></label>
-                            <label>Z ({unitLabel}){badge(flags.z)}<input type="number" value={mmToDisplay(obj.positionMm.z)} onChange={(e) => updateDraftPosition(idx, 'z', e.target.value)} aria-label={`${obj.name} z`} /></label>
+                            <label>X ({unitLabel}){badge(flags.x)}<DraftNumberField value={mmToDisplay(obj.positionMm.x)} unit={unit} min={posMin} max={posMax} suffix={unitLabel} ariaLabel={`${obj.name} x`} onCommit={(v) => updateDraftPosition(idx, 'x', v)} /></label>
+                            <label>Y ({unitLabel}){badge(flags.y)}<DraftNumberField value={mmToDisplay(obj.positionMm.y)} unit={unit} min={posMin} max={posMax} suffix={unitLabel} ariaLabel={`${obj.name} y`} onCommit={(v) => updateDraftPosition(idx, 'y', v)} /></label>
+                            <label>Z ({unitLabel}){badge(flags.z)}<DraftNumberField value={mmToDisplay(obj.positionMm.z)} unit={unit} min={posMin} max={posMax} suffix={unitLabel} ariaLabel={`${obj.name} z`} onCommit={(v) => updateDraftPosition(idx, 'z', v)} /></label>
                           </div>
                           <div className="layout-object-rot">
-                            <label>Rotation°{badge(flags.rotation)}<input type="number" value={obj.rotationDegrees} onChange={(e) => updateDraftRotation(idx, e.target.value)} aria-label={`${obj.name} rotation`} /></label>
+                            <label>Rotation°{badge(flags.rotation)}<DraftNumberField value={String(obj.rotationDegrees)} unit={unit} min={-360} max={360} suffix="°" ariaLabel={`${obj.name} rotation`} onCommit={(v) => updateDraftRotation(idx, v)} /></label>
                           </div>
                         </div>
                         )
                       })}
                     </div>
+                    <div className="wall-placement-section">
+                      <div className="section-label">PLACE ALONG WALL — lightweight assist</div>
+                      <p className="field-hint">Choose a wall to arrange draft objects by width. Snaps adjacent objects; you can still adjust manually. Only axis-aligned walls/objects are auto-placed (rotation limitation stated).</p>
+                      <div className="wall-select-row">
+                        <label>Wall
+                          <select aria-label="Choose wall for placement" value={selectedWallId ?? ''} onChange={e => { setSelectedWallId(e.target.value || null); setWallPlacementError(null); setDraftWallAssignments({}) }}>
+                            <option value="">— Use room wall length or first wall —</option>
+                            <option value="room">Room wall length ({(state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm !== null ? `${displayMeasurement((state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm!, unit)} ${unit}` : 'not set'})</option>
+                            {state.present.filter(o => o.kind === 'wall').map(w => (
+                              <option key={w.id} value={w.id}>{w.name} — {displayMeasurement(w.dimensionsMm.width, unit)} {unit} {Math.abs(w.rotationDegrees) < 0.5 ? '' : Math.abs(w.rotationDegrees - 90) < 0.5 || Math.abs(w.rotationDegrees - 270) < 0.5 ? ' (90° — Z wall)' : ' (rotated — manual only)'}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <label>Face
+                          <select aria-label="Wall face" value={selectedWallSide} onChange={e => setSelectedWallSide(e.target.value as 'front' | 'back')}>
+                            <option value="front">Front face (against thickness)</option>
+                            <option value="back">Back face</option>
+                          </select>
+                        </label>
+                        <button className="secondary-button" onClick={handleArrangeAlongWall} aria-label="Arrange along wall">Arrange along wall</button>
+                      </div>
+                      {state.present.filter(o => o.kind === 'wall').length >= 2 && (
+                        <div className="l-shaped-info">
+                          <p className="field-hint">L-shaped kitchen: {state.present.filter(o=>o.kind==='wall').length} walls detected. Assign each draft object to a wall below. Corner shared — avoid placing across corner without explicit choice.</p>
+                          {layoutDraftEditable.map((obj, idx) => (
+                            <div key={`assign-${idx}`} className="wall-assign-row">
+                              <span>{obj.name}</span>
+                              <select aria-label={`Assign ${obj.name} to wall`} value={draftWallAssignments[idx] ?? ''} onChange={e => setDraftWallAssignments(prev => ({ ...prev, [idx]: e.target.value || null }))}>
+                                <option value="">Use selected wall</option>
+                                <option value="room">Room wall</option>
+                                {state.present.filter(o=>o.kind==='wall').map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {(() => {
+                        const wallLen = selectedWallId === 'room' ? (state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm : selectedWallId ? state.present.find(o=>o.id===selectedWallId)?.dimensionsMm.width ?? null : ((state.roomMeasurements ?? defaultRoomMeasurements).wallLengthMm ?? state.present.find(o=>o.kind==='wall')?.dimensionsMm.width ?? null)
+                        const total = layoutDraftEditable.reduce((s,o)=>s+o.dimensionsMm.width,0)
+                        if (wallLen !== null) return <p className="wall-length-info">Wall available: {displayMeasurement(wallLen, unit)} {unit} — draft needs: {displayMeasurement(total, unit)} {unit} {total > wallLen ? <span className="field-error">— exceeds wall</span> : <span className="snap-info">— snap adjacent, {displayMeasurement(wallLen-total, unit)} {unit} spare</span>}</p>
+                        return <p className="field-hint">Enter a wall length in Room Measurements or add a wall object to see available length.</p>
+                      })()}
+                      {wallPlacementError && <p className="field-error" role="alert">{wallPlacementError}</p>}
+                    </div>
+                    {draftOverlaps.length > 0 && (
+                      <div className="layout-overlap-hint" role="status">
+                        <strong>Heads up — possible overlap (simple footprint check, not full collision):</strong>
+                        <ul>{draftOverlaps.map((m, i) => <li key={i}>{m}</li>)}</ul>
+                        <small>Vertical separation considered — upper cabinets above base do not count as overlap. Rotation overlaps not fully checked.</small>
+                      </div>
+                    )}
+                    {heightWarnings.length > 0 && (
+                      <div className="layout-overlap-hint" role="status">
+                        <strong>Wall height check:</strong>
+                        <ul>{heightWarnings.map((m, i) => <li key={i}>{m}</li>)}</ul>
+                        <small>Height is {(() => {
+                          const h = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightMm
+                          const prov = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightProvenance
+                          const conf = (state.roomMeasurements ?? defaultRoomMeasurements).wallHeightConfirmed
+                          if (h === null) return 'not set'
+                          return `${displayMeasurement(h, unit)}${unit} — ${prov ?? 'approx'} ${conf ? 'confirmed' : 'not confirmed'} (your confirmation, not code compliance)`
+                        })()} — not resized, adjust manually.</small>
+                      </div>
+                    )}
                     {layoutDraft.followUpQuestions.length > 0 && (
                       <div className="layout-followup">
                         <div className="analysis-followup-label">Follow-up — missing measurements</div>
@@ -1340,11 +1866,11 @@ export default function App() {
                       <button className="primary-button" onClick={handleApplyLayout} aria-label="Apply draft layout">Apply draft — add {layoutDraftEditable.length} objects</button>
                       <button className="secondary-button" onClick={handleCancelLayout}>Cancel draft</button>
                     </div>
-                    <p className="layout-apply-note">Apply adds objects as one undoable step. You can undo (⌘Z) and save the project.</p>
+                    <p className="layout-apply-note">Apply adds objects to your current scene (does not replace it) as one undoable step. You can undo (⌘Z) and save the project.</p>
                   </div>
                 )}
               </div>
-            </> : <div className="empty-state"><span className="empty-state-icon"><ImagePlus size={32} strokeWidth={1.3} /></span><div className="eyebrow">START WITH YOUR SPACE</div><h2>A fresh perspective<br />on your kitchen.</h2><p>Bring in a photo to keep your existing<br />space close while you design.</p><button className="primary-button" onClick={() => fileInput.current?.click()}><Plus size={16} />Upload kitchen photo</button><span className="empty-footnote">JPG, PNG or WEBP · Stays on this device · Saved with project — not sent unless you choose Analyze or Create draft.</span></div>}</div> : <div className="empty-state render-state"><span className="empty-state-icon"><Sparkles size={32} strokeWidth={1.3} /></span><div className="eyebrow">IMAGINE WHAT’S NEXT</div><h2>Your design.<br />A new point of view.</h2><p>Visual renovation concepts will live here.<br />AI rendering is coming in a future milestone.</p><span className="coming-soon"><span className="tiny-dot" />COMING SOON</span><button className="text-button" onClick={() => setView('cad')}>Back to your design<ArrowRight size={15} /></button></div>}
+            </> : <div className="empty-state"><span className="empty-state-icon"><ImagePlus size={32} strokeWidth={1.3} /></span><div className="eyebrow">START WITH YOUR SPACE</div><h2>A fresh perspective<br />on your kitchen.</h2><p>Bring in a photo to keep your existing<br />space close while you design.</p><button className="primary-button" onClick={() => fileInput.current?.click()}><Plus size={16} />Upload kitchen photo</button><button className="secondary-button" aria-label="Load demo draft" onClick={handleLoadDemoDraft} style={{marginTop:12}}>Load demo draft (offline fixture)</button><span className="empty-footnote">JPG, PNG or WEBP · Stays on this device · Saved with project — not sent unless you choose Analyze or Create draft. Demo fixture — not a live AI response.</span></div>}</div> : <div className="empty-state render-state"><span className="empty-state-icon"><Sparkles size={32} strokeWidth={1.3} /></span><div className="eyebrow">IMAGINE WHAT’S NEXT</div><h2>Your design.<br />A new point of view.</h2><p>Visual renovation concepts will live here.<br />AI rendering is coming in a future milestone.</p><span className="coming-soon"><span className="tiny-dot" />COMING SOON</span><button className="text-button" onClick={() => setView('cad')}>Back to your design<ArrowRight size={15} /></button></div>}
         </div>
       </section>
 

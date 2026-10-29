@@ -151,7 +151,11 @@ test('apply with rotation outside ±360 keeps draft and explains', async () => {
   const rotInput = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 rotation')[0]
   assert.ok(rotInput)
   await act(() => { rotInput.props.onChange({ target: { value: '500' } }) })
+  await act(() => { rotInput.props.onBlur() })
   await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+  // Refresh ref after blur (component may have re-rendered)
+  const updatedRotInput = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 rotation')[0]
+  assert.match(String(updatedRotInput.props.value), /500/)
 
   const applyBtn = host('button', root(), (n) => n.props['aria-label'] === 'Apply draft layout')
   await act(() => { applyBtn.props.onClick() })
@@ -161,8 +165,10 @@ test('apply with rotation outside ±360 keeps draft and explains', async () => {
   assert.match(text(root()), /Draft for test/)
   assert.equal(root().findAll((n) => n.type === 'button' && String(n.props.className).includes('scene-row')).length, 3)
 
-  // Correct rotation
-  await act(() => { rotInput.props.onChange({ target: { value: '45' } }) })
+  // Correct rotation — need to find input again (label unchanged until commit)
+  const rotInput2 = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 rotation')[0]
+  await act(() => { rotInput2.props.onChange({ target: { value: '45' } }) })
+  await act(() => { rotInput2.props.onBlur() })
   await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
   await act(() => { applyBtn.props.onClick() })
   await act(async () => { await new Promise((r) => setTimeout(r, 10)) })
@@ -256,8 +262,9 @@ test('display units and approx/edited distinction in review', async () => {
   const widthInput = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 width')[0]
   assert.equal(String(widthInput.props.value), '36')
 
-  // Edit width to 40 in (should mark as edited and convert to mm internally)
+  // Edit width to 40 in (should mark as edited and convert to mm internally) — need blur to commit
   await act(() => { widthInput.props.onChange({ target: { value: '40' } }) })
+  await act(() => { widthInput.props.onBlur() })
   await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
   assert.match(text(root()), /edited/)
   // After edit, width should be edited badge for that field

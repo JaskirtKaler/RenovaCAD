@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { POSITION_LIMIT_MM, TILE_MM, canNudge, displayMeasurement, workspaceReducer as reduce, type Axis } from './workspace'
+import { defaultRoomMeasurements } from './workspace'
 
 type State = Parameters<typeof reduce>[0]
 
@@ -12,6 +13,9 @@ function sample(): State {
       { id: 'upper-01', kind: 'wall-cabinet', name: 'Wall cabinet', dimensionsMm: { width: 914.4, height: 762, depth: 304.8 }, rotationDegrees: 0, positionMm: { x: -650, y: 1480, z: -300 } },
     ],
     proposal: { kind: 'resize', status: 'pending', objectId: 'base-01', objectName: 'Base cabinet', revision: 0, beforeMm: 914.4, afterMm: 1066.8 },
+    roomMeasurements: { ...defaultRoomMeasurements },
+    roomMeasurementsPast: [],
+    roomMeasurementsFuture: [],
   }
 }
 

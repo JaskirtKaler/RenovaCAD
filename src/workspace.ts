@@ -9,6 +9,16 @@ export type PositionMm = Record<Axis, number>
 export const TILE_MM = 304.8
 export const POSITION_LIMIT_MM = 10000
 
+export type ApproximateFields = {
+  width: boolean
+  height: boolean
+  depth: boolean
+  x: boolean
+  y: boolean
+  z: boolean
+  rotation: boolean
+}
+
 export interface SceneObject {
   id: string
   kind: ObjectKind
@@ -16,6 +26,8 @@ export interface SceneObject {
   dimensionsMm: Record<Dimension, number>
   rotationDegrees: number
   positionMm: PositionMm
+  /** Which fields are approximate estimates (true) vs user-edited (false). Undefined for legacy files. Editing a field does NOT imply verified construction measurement. */
+  approximateFields?: ApproximateFields
 }
 
 export const objectCatalog: Record<ObjectKind, { name: string; dimensionsMm: SceneObject['dimensionsMm'] }> = {
@@ -56,6 +68,25 @@ export type Proposal = { kind: 'none' } | {
   afterMm: number
 }
 
+export type MeasurementProvenance = 'approximate' | 'user-entered'
+export interface RoomMeasurements {
+  wallLengthMm: number | null
+  wallHeightMm: number | null
+  wallLengthProvenance: MeasurementProvenance | null
+  wallHeightProvenance: MeasurementProvenance | null
+  wallLengthConfirmed: boolean
+  wallHeightConfirmed: boolean
+}
+
+export const defaultRoomMeasurements: RoomMeasurements = {
+  wallLengthMm: null,
+  wallHeightMm: null,
+  wallLengthProvenance: null,
+  wallHeightProvenance: null,
+  wallLengthConfirmed: false,
+  wallHeightConfirmed: false,
+}
+
 interface WorkspaceState {
   past: Scene[]
   present: Scene
@@ -63,6 +94,9 @@ interface WorkspaceState {
   revision: number
   selectedId: string | null
   proposal: Proposal
+  roomMeasurements: RoomMeasurements
+  roomMeasurementsPast: RoomMeasurements[]
+  roomMeasurementsFuture: RoomMeasurements[]
 }
 
 type Action =
@@ -80,8 +114,10 @@ type Action =
   | { kind: 'cancel-proposal' }
   | { kind: 'undo' }
   | { kind: 'redo' }
-  | { kind: 'load'; scene: SceneObject[]; selectedId: string | null }
+  | { kind: 'load'; scene: SceneObject[]; selectedId: string | null; roomMeasurements?: RoomMeasurements }
   | { kind: 'apply-layout'; objects: SceneObject[] }
+  | { kind: 'set-room-measurement'; field: 'wallLength' | 'wallHeight'; valueMm: number | null }
+  | { kind: 'confirm-room-measurement'; field: 'wallLength' | 'wallHeight' }
 
 export const initialState: WorkspaceState = {
   past: [],
@@ -90,12 +126,24 @@ export const initialState: WorkspaceState = {
   revision: 0,
   selectedId: 'base-01',
   proposal: { kind: 'resize', status: 'pending', objectId: 'base-01', objectName: 'Base cabinet', revision: 0, beforeMm: 914.4, afterMm: 1066.8 },
+  roomMeasurements: { ...defaultRoomMeasurements },
+  roomMeasurementsPast: [],
+  roomMeasurementsFuture: [],
 }
 
 const initialStateRef = initialState
 
 function commit(state: WorkspaceState, next: Scene): WorkspaceState {
-  return { ...state, past: [...state.past.slice(-49), state.present], present: next, future: [], revision: state.revision + 1, proposal: { kind: 'none' } }
+  return {
+    ...state,
+    past: [...state.past.slice(-49), state.present],
+    present: next,
+    future: [],
+    roomMeasurementsPast: [...state.roomMeasurementsPast.slice(-49), state.roomMeasurements],
+    roomMeasurementsFuture: [],
+    revision: state.revision + 1,
+    proposal: { kind: 'none' },
+  }
 }
 
 function restoreSelection(state: WorkspaceState, scene: Scene): string | null {
@@ -103,6 +151,10 @@ function restoreSelection(state: WorkspaceState, scene: Scene): string | null {
 }
 
 export function workspaceReducer(state: WorkspaceState, action: Action): WorkspaceState {
+  // Ensure legacy states missing roomMeasurements still work
+  if (!state.roomMeasurements) (state as unknown as WorkspaceState).roomMeasurements = { ...defaultRoomMeasurements }
+  if (!state.roomMeasurementsPast) (state as unknown as WorkspaceState).roomMeasurementsPast = []
+  if (!state.roomMeasurementsFuture) (state as unknown as WorkspaceState).roomMeasurementsFuture = []
   const selected = state.present.find((object) => object.id === state.selectedId)
   switch (action.kind) {
     case 'select':
@@ -111,21 +163,21 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
       if (!selected || !Number.isFinite(action.valueMm) || action.valueMm < 25.4 || action.valueMm > 10000) return state
       const valueMm = Math.round(action.valueMm * 1000) / 1000
       if (Math.abs(selected.dimensionsMm[action.dimension] - valueMm) < 0.0005) return state
-      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, dimensionsMm: { ...object.dimensionsMm, [action.dimension]: valueMm } } : object))
+      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, dimensionsMm: { ...object.dimensionsMm, [action.dimension]: valueMm }, approximateFields: object.approximateFields ? { ...object.approximateFields, [action.dimension]: false } : undefined } : object))
     }
     case 'rotate':
       if (!selected || !Number.isFinite(action.degrees) || Math.abs(action.degrees) > 360 || selected.rotationDegrees === action.degrees) return state
-      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, rotationDegrees: action.degrees } : object))
+      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, rotationDegrees: action.degrees, approximateFields: object.approximateFields ? { ...object.approximateFields, rotation: false } : undefined } : object))
     case 'nudge': {
       if (!selected || !canNudge(selected, action.axis, action.direction)) return state
       const coordinate = Math.round((selected.positionMm[action.axis] + TILE_MM * action.direction) * 1000) / 1000
-      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, positionMm: { ...object.positionMm, [action.axis]: coordinate } } : object))
+      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, positionMm: { ...object.positionMm, [action.axis]: coordinate }, approximateFields: object.approximateFields ? { ...object.approximateFields, [action.axis]: false } : undefined } : object))
     }
     case 'set-position': {
       if (!selected || !Number.isFinite(action.valueMm) || Math.abs(action.valueMm) > POSITION_LIMIT_MM) return state
       const valueMm = Math.round(action.valueMm * 1000) / 1000
       if (Math.abs(selected.positionMm[action.axis] - valueMm) < 0.0005) return state
-      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, positionMm: { ...object.positionMm, [action.axis]: valueMm } } : object))
+      return commit(state, state.present.map((object) => object.id === selected.id ? { ...object, positionMm: { ...object.positionMm, [action.axis]: valueMm }, approximateFields: object.approximateFields ? { ...object.approximateFields, [action.axis]: false } : undefined } : object))
     }
     case 'move-to': {
       const target = state.present.find((o) => o.id === action.id)
@@ -139,7 +191,18 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
         z: Math.round(action.positionMm.z * 1000) / 1000,
       }
       if (Math.abs(target.positionMm.x - nextPos.x) < 0.0005 && Math.abs(target.positionMm.y - nextPos.y) < 0.0005 && Math.abs(target.positionMm.z - nextPos.z) < 0.0005) return state
-      return commit(state, state.present.map((o) => o.id === action.id ? { ...o, positionMm: nextPos } : o))
+      const changed: Partial<ApproximateFields> = {}
+      let hasChange = false
+      for (const axis of ['x', 'y', 'z'] as const) {
+        if (Math.abs(target.positionMm[axis] - nextPos[axis]) >= 0.0005) {
+          changed[axis] = false
+          hasChange = true
+        }
+      }
+      if (!hasChange && !target.approximateFields) {
+        return commit(state, state.present.map((o) => o.id === action.id ? { ...o, positionMm: nextPos } : o))
+      }
+      return commit(state, state.present.map((o) => o.id === action.id ? { ...o, positionMm: nextPos, approximateFields: o.approximateFields ? { ...o.approximateFields, ...changed } : undefined } : o))
     }
     case 'add': {
       const position = placementForNewObject(state.present, action.objectKind)
@@ -175,14 +238,41 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
     case 'cancel-proposal':
       return state.proposal.kind === 'resize' && state.proposal.status === 'pending' ? { ...state, proposal: { ...state.proposal, status: 'canceled' } } : state
     case 'undo': {
-      const previous = state.past.at(-1)
-      if (!previous) return state
-      return { ...state, past: state.past.slice(0, -1), present: previous, future: [state.present, ...state.future], selectedId: restoreSelection(state, previous), revision: state.revision + 1, proposal: { kind: 'none' } }
+      if (state.past.length === 0) return state
+      const previous = state.past[state.past.length - 1]
+      const prevRM = state.roomMeasurementsPast[state.roomMeasurementsPast.length - 1]
+      // Past and roomMeasurementsPast are kept in lockstep; each entry corresponds to one ordered action
+      if (prevRM === undefined) return state
+      return {
+        ...state,
+        past: state.past.slice(0, -1),
+        present: previous,
+        future: [state.present, ...state.future],
+        roomMeasurements: prevRM,
+        roomMeasurementsPast: state.roomMeasurementsPast.slice(0, -1),
+        roomMeasurementsFuture: [state.roomMeasurements, ...state.roomMeasurementsFuture],
+        selectedId: restoreSelection(state, previous),
+        revision: state.revision + 1,
+        proposal: { kind: 'none' },
+      }
     }
     case 'redo': {
+      if (state.future.length === 0) return state
       const next = state.future[0]
-      if (!next) return state
-      return { ...state, past: [...state.past, state.present], present: next, future: state.future.slice(1), selectedId: restoreSelection(state, next), revision: state.revision + 1, proposal: { kind: 'none' } }
+      const nextRM = state.roomMeasurementsFuture[0]
+      if (nextRM === undefined) return state
+      return {
+        ...state,
+        past: [...state.past, state.present],
+        present: next,
+        future: state.future.slice(1),
+        roomMeasurements: nextRM,
+        roomMeasurementsPast: [...state.roomMeasurementsPast, state.roomMeasurements],
+        roomMeasurementsFuture: state.roomMeasurementsFuture.slice(1),
+        selectedId: restoreSelection(state, next),
+        revision: state.revision + 1,
+        proposal: { kind: 'none' },
+      }
     }
     case 'load': {
       // Loading a project replaces scene, resets history, revision, and any pending proposal.
@@ -190,7 +280,8 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
       const scene = action.scene
       const ids = new Set(scene.map(o => o.id))
       const selectedId = action.selectedId && ids.has(action.selectedId) ? action.selectedId : scene[0]?.id ?? null
-      return { past: [], present: scene, future: [], revision: 0, selectedId, proposal: { kind: 'none' } }
+      const rm = action.roomMeasurements ?? { ...defaultRoomMeasurements }
+      return { past: [], present: scene, future: [], revision: 0, selectedId, proposal: { kind: 'none' }, roomMeasurements: rm, roomMeasurementsPast: [], roomMeasurementsFuture: [] }
     }
     case 'apply-layout': {
       // Apply approved draft as one undoable commit that adds objects to current scene.
@@ -211,6 +302,13 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
         if (!Number.isFinite(o.positionMm.x) || Math.abs(o.positionMm.x) > 10000) return state
         if (!Number.isFinite(o.positionMm.y) || Math.abs(o.positionMm.y) > 10000) return state
         if (!Number.isFinite(o.positionMm.z) || Math.abs(o.positionMm.z) > 10000) return state
+        if (o.approximateFields !== undefined) {
+          const af = o.approximateFields as Record<string, unknown>
+          if (!af || typeof af !== 'object') return state
+          for (const k of ['width', 'height', 'depth', 'x', 'y', 'z', 'rotation'] as const) {
+            if (typeof af[k] !== 'boolean') return state
+          }
+        }
         // Normalize to 0.001 mm
         o.dimensionsMm.width = Math.round(o.dimensionsMm.width * 1000) / 1000
         o.dimensionsMm.height = Math.round(o.dimensionsMm.height * 1000) / 1000
@@ -224,6 +322,62 @@ export function workspaceReducer(state: WorkspaceState, action: Action): Workspa
       const committed = commit(state, next)
       // Select first newly added object
       return { ...committed, selectedId: action.objects[0]?.id ?? committed.selectedId }
+    }
+    case 'set-room-measurement': {
+      const field = action.field
+      const val = action.valueMm === null ? null : Math.round(action.valueMm * 1000) / 1000
+      if (val !== null && (!Number.isFinite(val) || val < 25.4 || val > 10000)) return state
+      const current = field === 'wallLength' ? state.roomMeasurements.wallLengthMm : state.roomMeasurements.wallHeightMm
+      if (current === val) return state
+      const nextRM: RoomMeasurements = {
+        ...state.roomMeasurements,
+        wallLengthMm: field === 'wallLength' ? val : state.roomMeasurements.wallLengthMm,
+        wallHeightMm: field === 'wallHeight' ? val : state.roomMeasurements.wallHeightMm,
+        wallLengthProvenance: field === 'wallLength' ? (val === null ? null : 'user-entered') : state.roomMeasurements.wallLengthProvenance,
+        wallHeightProvenance: field === 'wallHeight' ? (val === null ? null : 'user-entered') : state.roomMeasurements.wallHeightProvenance,
+        wallLengthConfirmed: field === 'wallLength' ? false : state.roomMeasurements.wallLengthConfirmed,
+        wallHeightConfirmed: field === 'wallHeight' ? false : state.roomMeasurements.wallHeightConfirmed,
+      }
+      if (val === null) {
+        nextRM.wallLengthConfirmed = field === 'wallLength' ? false : nextRM.wallLengthConfirmed
+        nextRM.wallHeightConfirmed = field === 'wallHeight' ? false : nextRM.wallHeightConfirmed
+      }
+      return {
+        ...state,
+        past: [...state.past.slice(-49), state.present],
+        present: state.present,
+        future: [],
+        roomMeasurements: nextRM,
+        roomMeasurementsPast: [...state.roomMeasurementsPast.slice(-49), state.roomMeasurements],
+        roomMeasurementsFuture: [],
+        revision: state.revision + 1,
+        proposal: { kind: 'none' },
+      }
+    }
+    case 'confirm-room-measurement': {
+      const field = action.field
+      const val = field === 'wallLength' ? state.roomMeasurements.wallLengthMm : state.roomMeasurements.wallHeightMm
+      if (val === null || !Number.isFinite(val)) return state
+      const isConfirmed = field === 'wallLength' ? state.roomMeasurements.wallLengthConfirmed : state.roomMeasurements.wallHeightConfirmed
+      if (isConfirmed) return state
+      const nextRM: RoomMeasurements = {
+        ...state.roomMeasurements,
+        wallLengthConfirmed: field === 'wallLength' ? true : state.roomMeasurements.wallLengthConfirmed,
+        wallHeightConfirmed: field === 'wallHeight' ? true : state.roomMeasurements.wallHeightConfirmed,
+        wallLengthProvenance: field === 'wallLength' ? 'user-entered' : state.roomMeasurements.wallLengthProvenance,
+        wallHeightProvenance: field === 'wallHeight' ? 'user-entered' : state.roomMeasurements.wallHeightProvenance,
+      }
+      return {
+        ...state,
+        past: [...state.past.slice(-49), state.present],
+        present: state.present,
+        future: [],
+        roomMeasurements: nextRM,
+        roomMeasurementsPast: [...state.roomMeasurementsPast.slice(-49), state.roomMeasurements],
+        roomMeasurementsFuture: [],
+        revision: state.revision + 1,
+        proposal: { kind: 'none' },
+      }
     }
     default: {
       const exhaustive: never = action
@@ -240,4 +394,14 @@ export function useWorkspace() {
 
 export function displayMeasurement(valueMm: number, unit: Unit): string {
   return Number((unit === 'in' ? valueMm / 25.4 : valueMm).toFixed(2)).toString()
+}
+
+export function isApproximateField(obj: SceneObject | undefined, field: keyof ApproximateFields): boolean | undefined {
+  return obj?.approximateFields?.[field]
+}
+
+export function approximateBadgeLabel(obj: SceneObject | undefined, field: keyof ApproximateFields): string | null {
+  const v = isApproximateField(obj, field)
+  if (v === undefined) return null
+  return v ? 'approx — from photo' : 'edited — not verified'
 }

@@ -297,11 +297,13 @@ test('review edit: remove object and change dimensions before apply', async () =
   // Edit width of first object — display unit is in by default, so 1000 mm = 39.37 in
   const widthInput = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 width')[0]
   assert.ok(widthInput, 'width input missing')
-  // Input shows display units (in); set to 39.37 to represent 1000 mm
+  // Input shows display units (in); set to 39.37 to represent 1000 mm — commit on blur
   await act(() => { widthInput.props.onChange({ target: { value: '39.37' } }) })
+  await act(() => { widthInput.props.onBlur() })
   await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
   // Value is in display units (in)
-  assert.equal(String(widthInput.props.value), '39.37')
+  const updatedWidth = root().findAll((n) => n.type === 'input' && n.props['aria-label'] === 'Base cabinet 1 width')[0]
+  assert.equal(String(updatedWidth.props.value), '39.37')
 
   // Apply
   const applyBtn = host('button', root(), (n) => n.props['aria-label'] === 'Apply draft layout')

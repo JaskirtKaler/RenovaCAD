@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { workspaceReducer as reduce, initialState } from './workspace'
+import { defaultRoomMeasurements } from './workspace'
 import { parseProject, serializeProject, PROJECT_VERSION } from './project'
 import type { ProjectFile } from './project'
 

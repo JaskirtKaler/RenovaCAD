@@ -3,6 +3,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer'
 import App from './App'
 import { workspaceReducer as reduce } from './workspace'
+import { defaultRoomMeasurements } from './workspace'
 
 // Helpers mirrored from App.test.tsx mount setup
 const listeners = new Map<string, Set<EventListener>>()
@@ -82,7 +83,7 @@ afterEach(async () => {
 test('ai-proposal sets pending proposal and apply validates revision and beforeMm', () => {
   const s = { past: [], future: [], revision: 0, selectedId: 'base-01', present: [
     { id: 'base-01', kind: 'base-cabinet' as const, name: 'Base cabinet', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, rotationDegrees: 0, positionMm: { x: 0, y: 0, z: 0 } },
-  ], proposal: { kind: 'none' as const } }
+  ], proposal: { kind: 'none' as const }, roomMeasurements: { ...defaultRoomMeasurements }, roomMeasurementsPast: [], roomMeasurementsFuture: [] }
   const pending = reduce(s, { kind: 'ai-proposal', objectId: 'base-01', objectName: 'Base cabinet', revision: 0, beforeMm: 914.4, afterMm: 1066.8 })
   assert.equal(pending.proposal.kind, 'resize')
   if (pending.proposal.kind === 'resize') assert.equal(pending.proposal.afterMm, 1066.8)
@@ -98,7 +99,7 @@ test('ai-proposal sets pending proposal and apply validates revision and beforeM
 test('ai-proposal cancel leaves design unchanged without history', () => {
   const s = { past: [], future: [], revision: 0, selectedId: 'base-01', present: [
     { id: 'base-01', kind: 'base-cabinet' as const, name: 'Base', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, rotationDegrees: 0, positionMm: { x: 0, y: 0, z: 0 } },
-  ], proposal: { kind: 'none' as const } }
+  ], proposal: { kind: 'none' as const }, roomMeasurements: { ...defaultRoomMeasurements }, roomMeasurementsPast: [], roomMeasurementsFuture: [] }
   const pending = reduce(s, { kind: 'ai-proposal', objectId: 'base-01', objectName: 'Base', revision: 0, beforeMm: 914.4, afterMm: 1066.8 })
   const canceled = reduce(pending, { kind: 'cancel-proposal' })
   assert.equal(canceled.present[0].dimensionsMm.width, 914.4)
@@ -109,7 +110,7 @@ test('ai-proposal cancel leaves design unchanged without history', () => {
 test('stale ai-proposal after scene edit cannot be applied', () => {
   const s = { past: [], future: [], revision: 0, selectedId: 'base-01', present: [
     { id: 'base-01', kind: 'base-cabinet' as const, name: 'Base', dimensionsMm: { width: 914.4, height: 876.3, depth: 609.6 }, rotationDegrees: 0, positionMm: { x: 0, y: 0, z: 0 } },
-  ], proposal: { kind: 'none' as const } }
+  ], proposal: { kind: 'none' as const }, roomMeasurements: { ...defaultRoomMeasurements }, roomMeasurementsPast: [], roomMeasurementsFuture: [] }
   const withProposal = reduce(s, { kind: 'ai-proposal', objectId: 'base-01', objectName: 'Base', revision: 0, beforeMm: 914.4, afterMm: 1066.8 })
   const edited = reduce(withProposal, { kind: 'resize', dimension: 'width', valueMm: 1200 })
   // Editing invalidates pending proposal (commit clears it)

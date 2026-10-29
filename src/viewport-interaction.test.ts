@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { axisScreenVectors, movementPlaneIsUsable, snapDelta, distanceMm, cameraForView, type Point3 } from './viewport'
 import { workspaceReducer as reduce, initialState } from './workspace'
+import { defaultRoomMeasurements } from './workspace'
 
 test('axis directions change with camera views', () => {
   const front = cameraForView('front', 'perspective')
